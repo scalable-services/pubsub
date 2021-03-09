@@ -34,6 +34,7 @@ libraryDependencies ++= Seq(
   "com.typesafe.akka" %% "akka-stream" % akkaVersion,
   "com.typesafe.akka" %% "akka-discovery" % akkaVersion,
   "com.typesafe.akka" %% "akka-pki" % akkaVersion,
+  "com.typesafe.akka" %% "akka-cluster-tools" % AkkaVersion,
 
   "services.scalable" %% "index" % "0.9",
 

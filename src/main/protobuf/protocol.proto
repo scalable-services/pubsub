@@ -41,3 +41,8 @@ message Task {
   int64 start_tmp = 4;
 }
 
+message IndexChanged {
+  string id = 1;
+  map<string, string> roots = 2;
+}
+

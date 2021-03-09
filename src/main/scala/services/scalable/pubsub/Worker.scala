@@ -3,6 +3,7 @@ package services.scalable.pubsub
 import akka.actor.typed.Behavior
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.Behaviors
+import akka.cluster.pubsub.{DistributedPubSub, DistributedPubSubMediator}
 import com.google.protobuf.any.Any
 import io.vertx.scala.core.Vertx
 import io.vertx.scala.kafka.client.consumer.{KafkaConsumer, KafkaConsumerRecords}
@@ -16,17 +17,27 @@ import java.util.UUID
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.{Future, Promise}
 import scala.util.{Failure, Success}
+import akka.actor.typed.scaladsl.adapter._
+import services.scalable.index.impl.DefaultContext
 
 object Worker {
+  sealed trait WorkerMessage
 
-  sealed trait Command
+  sealed trait Command extends WorkerMessage
+  sealed trait Event extends WorkerMessage
+
   final case object Stop extends Command
+  final case class IndexChanged(indexes: Map[String, Option[String]]) extends Event
 
   def apply(name: String)(implicit cache: Cache[String, Bytes, Bytes],
-                          storage: Storage[String, Bytes, Bytes]): Behavior[Command] = Behaviors.setup { ctx =>
+                          storage: Storage[String, Bytes, Bytes]): Behavior[WorkerMessage] = Behaviors.setup { ctx =>
 
     val logger = ctx.log
     implicit val ec = ctx.executionContext
+
+    val mediator = DistributedPubSub(ctx.system).mediator
+    // subscribe to the topic named "content"
+    mediator ! DistributedPubSubMediator.Subscribe("events", ctx.self.toClassic)
 
     ctx.log.info(s"${Console.YELLOW_B}Starting worker ${name}${Console.RESET}\n")
     ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)
@@ -161,6 +172,24 @@ object Worker {
     consumer.subscribe(Topics.TASKS)
 
     Behaviors.receiveMessage {
+      case IndexChanged(roots) =>
+
+        logger.info(s"\n${Console.MAGENTA_B}${name} RECEIVED PUBSUB MESSAGE: ${roots}${Console.RESET}\n")
+
+        roots.foreach { case (idx, root) =>
+          if(indexes.isDefinedAt(idx)){
+            val i = indexes(idx).asInstanceOf[DefaultContext]
+
+            val ctx = new DefaultContext(i.indexId, root, i.NUM_LEAF_ENTRIES,
+              i.NUM_META_ENTRIES)
+            val index = new Index[String, Bytes, Bytes]()(ec, ctx)
+
+            indexes.update(idx, index)
+          }
+        }
+
+        Behaviors.same
+
       case Stop =>
 
         ctx.log.info(s"${Console.RED_B}WORKER IS STOPPING: ${name}${Console.RESET}\n")

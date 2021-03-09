@@ -3,6 +3,7 @@ package services.scalable.pubsub
 import akka.actor.typed.Behavior
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.Behaviors
+import akka.cluster.pubsub.{DistributedPubSub, DistributedPubSubMediator}
 import com.google.protobuf.any.Any
 import io.vertx.scala.core.Vertx
 import io.vertx.scala.kafka.client.common.TopicPartition
@@ -30,6 +31,10 @@ object Subscriber {
 
     ctx.log.info(s"${Console.YELLOW_B}Starting subscriber ${name}${Console.RESET}\n")
     ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)
+
+    import akka.cluster.pubsub.DistributedPubSubMediator.Publish
+    // activate the extension
+    val mediator = DistributedPubSub(ctx.system).mediator
 
     val vertx = Vertx.vertx()
 
@@ -105,8 +110,10 @@ object Subscriber {
       }
 
       logger.info(s"${Console.MAGENTA_B}${name} received commands ${commands}${Console.RESET}\n")
-      
-      Future.sequence(commands.groupBy(_.topic).map { case (topic, subs) =>
+
+      var topics = commands.groupBy(_.topic)
+
+      Future.sequence(topics.map { case (topic, subs) =>
 
         val distinct = TrieMap.empty[String, Subscribe]
 
@@ -118,7 +125,20 @@ object Subscriber {
 
         addSubscribers(topic, distinct.map(_._2).toSeq)
       })/*.flatMap {_ => consumer.commitFuture()}*/.onComplete {
-        case Success(ok) => consumer.resume()
+        case Success(ok) =>
+
+          val changes = topics.map { case (t, _) =>
+            val name = s"${t}_subscribers"
+            val (_, ctx) = indexes(name)
+
+            name -> ctx.root
+          }
+
+          if(!changes.isEmpty){
+            mediator ! DistributedPubSubMediator.Publish("events", Worker.IndexChanged(changes))
+          }
+
+          consumer.resume()
         case Failure(ex) => ex.printStackTrace()
       }
     }
