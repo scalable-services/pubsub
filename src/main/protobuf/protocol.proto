@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+//#options
+option java_multiple_files = true;
+option java_package = "services.scalable.pubsub.grpc";
+option java_outer_classname = "GreeterService";
+
+package services.scalable.pubsub.grpc;
+
+message HelloRequest {
+  string name = 1;
+}
+
+message HelloResponse {
+  string msg = 1;
+}
+
+message Subscribe {
+  string id = 1;
+  string topic = 2;
+  string kafka_partition = 3;
+  string subscriber = 4;
+}
+
+message Message {
+  string id = 1;
+  string topic = 2;
+  bytes data = 3;
+}
+
+message Post {
+  string id = 1;
+  Message message = 2;
+  repeated string subscribers = 3;
+}
+
+message Task {
+  string id = 1;
+  Message message = 2;
+  string lastBlock = 3;
+  int64 start_tmp = 4;
+}
+
