@@ -37,7 +37,7 @@ object Worker {
 
     val mediator = DistributedPubSub(ctx.system).mediator
     // subscribe to the topic named "content"
-    mediator ! DistributedPubSubMediator.Subscribe("events", ctx.self.toClassic)
+    mediator ! DistributedPubSubMediator.Subscribe(Topics.EVENTS, ctx.self.toClassic)
 
     ctx.log.info(s"${Console.YELLOW_B}Starting worker ${name}${Console.RESET}\n")
     ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)

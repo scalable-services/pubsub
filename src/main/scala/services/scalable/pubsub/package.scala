@@ -44,6 +44,8 @@ package object pubsub {
   object Topics {
     val SUBSCRIPTIONS = "services.scalable.pubsub.subscriptions"
     val TASKS = "services.scalable.pubsub.tasks"
+
+    val EVENTS = "services.scalable.pubsub.events"
   }
 
   val SUBSCRIBERS = (0 until Config.NUM_SUBSCRIBERS).map(s => s"subscriber-$s")

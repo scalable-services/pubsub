@@ -135,7 +135,8 @@ object Subscriber {
           }
 
           if(!changes.isEmpty){
-            mediator ! DistributedPubSubMediator.Publish("events", Worker.IndexChanged(changes))
+            mediator ! DistributedPubSubMediator.Publish(Topics.EVENTS,
+              Worker.IndexChanged(changes))
           }
 
           consumer.resume()
