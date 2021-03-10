@@ -125,19 +125,18 @@ object Worker {
       val delivery = TrieMap.empty[String, Seq[(Message, Seq[String])]]
 
       msgs.foreach { case (m, subscribers) =>
-        subscribers.map(_._1).groupBy(brokerClients(_)).foreach { case (broker, clients) =>
+        subscribers.groupBy(_._2).foreach { case (broker, clients_topics) =>
           delivery.get(broker) match {
             case None =>
 
-              delivery.put(broker, Seq(m -> clients))
+              delivery.put(broker, Seq(m -> clients_topics.map(_._1)))
 
-            case Some(list) => delivery.put(broker, list :+ (m -> clients))
+            case Some(list) => delivery.put(broker, list :+ (m -> clients_topics.map(_._1)))
           }
         }
       }
 
-      Future.sequence(delivery.map{case (broker, list) => list.map{case (m, clients) =>
-
+      /*Future.sequence(delivery.map{case (broker, list) => list.map{ case (m, clients) =>
         logger.info(s"\n\n${Console.BLUE_B}subscribers: ${clients}\n\n${Console.RESET}")
 
         Post(UUID.randomUUID.toString, Some(m), clients)
@@ -152,27 +151,26 @@ object Worker {
           .addListener(() => pr.success(true), ec)
 
         pr.future
-      }).map(_ => true)
+      }).map(_ => true)*/
 
-      /*Future.sequence(msgs.map { case (m, subscribers) =>
+      Future.sequence(delivery.map { case (broker, list) =>
+        PostBatch(UUID.randomUUID.toString, broker, list.map{ case (m, clients) =>
+          logger.info(s"\n\n${Console.BLUE_B}subscribers: ${clients}\n\n${Console.RESET}")
 
-        logger.info(s"\n\n${Console.BLUE_B}subscribers: ${subscribers}\n\n${Console.RESET}")
+          Post(UUID.randomUUID.toString, Some(m), clients)
+        })
+      }.map { batch =>
 
-        Future.sequence(subscribers.groupBy(_._2).map { case (partition, subscribers) =>
+        val buf = Any.pack(batch).toByteArray
 
-          val post = Post(UUID.randomUUID.toString, Some(m), subscribers.map(_._1))
-          val buf = Any.pack(post).toByteArray
+        val pr = Promise[Boolean]()
+        val broker = brokerPublishers(batch.topic)
 
-          val broker = brokerPublishers(partition)
-
-          val pr = Promise[Boolean]()
-
-          broker.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build())
+        broker.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build())
           .addListener(() => pr.success(true), ec)
 
-          pr.future
-        })
-      }).map(_ => true)*/
+        pr.future
+      }).map(_ => true)
     }
 
     class PublishTask extends TimerTask {

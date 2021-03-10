@@ -53,19 +53,21 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
       logger.info(s"${Console.GREEN_B}broker-$id received message: ${message}${Console.RESET}")
 
-      val post = Any.parseFrom(message.getData.toByteArray).unpack(Post)
+      val batch = Any.parseFrom(message.getData.toByteArray).unpack(PostBatch)
 
-      post.subscribers.foreach { s =>
+      batch.posts.foreach { post =>
+        post.subscribers.foreach { s =>
 
-        endpoints.get(s) match {
-          case Some(e) =>
+          endpoints.get(s) match {
+            case Some(e) =>
 
-            val msg = post.message.get
+              val msg = post.message.get
 
-            e.publish(msg.topic, io.vertx.core.buffer.Buffer.buffer(msg.data.toByteArray),
-              MqttQoS.AT_LEAST_ONCE, false, false)
+              e.publish(msg.topic, io.vertx.core.buffer.Buffer.buffer(msg.data.toByteArray),
+                MqttQoS.AT_LEAST_ONCE, false, false)
 
-          case None =>
+            case None =>
+          }
         }
       }
 

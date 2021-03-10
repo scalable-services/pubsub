@@ -1,6 +1,7 @@
+organization := "services.scalable"
 name := "pubsub"
 
-version := "0.2"
+version := "0.3"
 
 scalaVersion := "2.12.13"
 

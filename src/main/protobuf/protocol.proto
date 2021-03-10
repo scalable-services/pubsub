@@ -34,6 +34,12 @@ message Post {
   repeated string subscribers = 3;
 }
 
+message PostBatch {
+  string id = 1;
+  string topic = 2;
+  repeated Post posts = 3;
+}
+
 message Task {
   string id = 1;
   Message message = 2;
