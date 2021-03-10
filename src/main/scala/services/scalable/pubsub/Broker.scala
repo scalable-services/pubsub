@@ -156,7 +156,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
     endpoint.publishHandler(message => {
 
-      logger.info(s"${Console.GREEN_B}$brokerId received [${message.payload().toString(Charset.defaultCharset())}] with QoS [${message.qosLevel()}]${Console.RESET}")
+      logger.info(s"\n\n${Console.GREEN_B}$brokerId received [${message.payload().toString(Charset.defaultCharset())}] with QoS [${message.qosLevel()}]${Console.RESET}\n\n")
 
       val m = Message(UUID.randomUUID.toString, message.topicName(),
         ByteString.copyFrom(message.payload().getBytes))

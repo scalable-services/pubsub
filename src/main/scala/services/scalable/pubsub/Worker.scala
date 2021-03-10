@@ -13,7 +13,7 @@ import services.scalable.index._
 import services.scalable.index.impl.DefaultContext
 import services.scalable.pubsub.grpc._
 
-import java.util.UUID
+import java.util.{TimerTask, UUID}
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.{Future, Promise}
 import scala.util.{Failure, Success}
@@ -113,6 +113,49 @@ object Worker {
       getSubscriptions(indexes(indexId))
     }
 
+    val queue = TrieMap.empty[String, (Task, AckReplyConsumer)]
+    val timer = new java.util.Timer()
+
+    class PublishTask extends TimerTask {
+      override def run(): Unit = {
+
+        val commands = queue.map(_._2._1).toSeq
+
+        if(commands.isEmpty){
+          timer.schedule(new PublishTask(), 100L)
+          return
+        }
+        
+        Future.sequence(commands.map{t => getSubscriptions(t.message.get.topic, t.lastBlock).map(t.message.get -> _)}).flatMap { subscriptions =>
+          Future.sequence(subscriptions.map { case (m, (subscribers, last)) =>
+
+            publishTask(m, last).flatMap { ok =>
+              val brokers = subscribers.map{ case (s, _) => brokerClients(s) -> s}.groupBy(_._1).map{case (broker, list) =>
+                broker -> list.map(_._2)
+              }
+
+              Future.sequence(brokers.map { case (b, list) =>
+                val post = Post(UUID.randomUUID.toString, Some(m), list)
+                publishBroker(post, b)
+              })
+            }
+          })
+        }.onComplete {
+          case Success(ok) =>
+
+            commands.foreach { t =>
+              queue.remove(t.id).get._2.ack()
+            }
+
+            timer.schedule(new PublishTask(), 100L)
+          case Failure(ex) => ex.printStackTrace()
+        }
+
+      }
+    }
+
+    timer.schedule(new PublishTask(), 100L)
+
     val tasksReceiver = new MessageReceiver {
       override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
 
@@ -120,32 +163,7 @@ object Worker {
 
         println(s"${Console.GREEN_B}worker $name received task ${t}${Console.RESET}\n")
 
-        getSubscriptions(t.message.get.topic, t.lastBlock).onComplete {
-          case Success((subscribers, last)) =>
-
-            publishTask(t.message.get, last).onComplete {
-
-              case Success(ok) =>
-
-                val brokers = subscribers.map{ case (s, _) => brokerClients(s) -> s}.groupBy(_._1).map{case (broker, list) =>
-                  broker -> list.map(_._2)
-                }
-
-                Future.sequence(brokers.map { case (b, list) =>
-                  val post = Post(UUID.randomUUID.toString, t.message, list)
-                  publishBroker(post, b)
-                }).onComplete {
-                  case Success(ok) => consumer.ack()
-                  case Failure(ex) => ex.printStackTrace()
-                }
-
-              case Failure(ex) => ex.printStackTrace()
-
-            }
-
-          case Failure(ex) => ex.printStackTrace()
-        }
-
+        queue.put(t.id, t -> consumer)
       }
     }
 

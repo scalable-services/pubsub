@@ -60,7 +60,7 @@ object Main {
     val basePort = 3000
 
     for(i<-0 until Broker.Config.NUM_BROKERS){
-      val broker = new Broker(i.toString, "localhost", basePort + i)
+      val broker = new Broker(i.toString, "0.0.0.0", basePort + i)
     }
 
     ports.foreach(startup)
