@@ -5,6 +5,7 @@ import com.google.api.gax.batching.{BatchingSettings, FlowControlSettings}
 import com.google.api.gax.core.FixedCredentialsProvider
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.collect.Lists
+import com.google.common.hash.Hashing
 import io.vertx.scala.core.VertxOptions
 
 import java.io.FileInputStream
@@ -64,7 +65,7 @@ package object pubsub {
     val NUM_LEAF_ENTRIES = 10
     val NUM_META_ENTRIES = 10
 
-    val NUM_SUBSCRIBERS = 1
+    val NUM_SUBSCRIBERS = 3
     val NUM_WORKERS = 3
 
     val KEYSPACE = "pubsub"
@@ -89,4 +90,9 @@ package object pubsub {
     .createScoped(Lists.newArrayList("https://www.googleapis.com/auth/cloud-platform"))
 
   val GOOGLE_CREDENTIALS_PROVIDER = FixedCredentialsProvider.create(GOOGLE_CREDENTIALS)
+
+  def computeSubscriptionTopic(topic: String): String = {
+    val id = Hashing.murmur3_128().hashBytes(topic.getBytes()).asInt() % Config.NUM_SUBSCRIBERS
+    SUBSCRIBERS(id)
+  }
 }

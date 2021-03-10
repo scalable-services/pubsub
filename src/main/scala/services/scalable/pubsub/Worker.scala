@@ -104,16 +104,6 @@ object Worker {
       }
 
       getSubscriptions(indexes(indexId))
-
-      /*storage.load(indexId).flatMap { ctx =>
-
-          val index = new Index[String, Bytes, Bytes]()(ec, ctx)
-          indexes.put(indexId, index)
-
-          getSubscriptions(index)
-        }.recover {
-            case _ => Seq.empty[(String, String)] -> None
-        }*/
     }
 
     val queue = TrieMap.empty[String, (Task, AckReplyConsumer)]
@@ -135,23 +125,6 @@ object Worker {
           }
         }
       }
-
-      /*Future.sequence(delivery.map{case (broker, list) => list.map{ case (m, clients) =>
-        logger.info(s"\n\n${Console.BLUE_B}subscribers: ${clients}\n\n${Console.RESET}")
-
-        Post(UUID.randomUUID.toString, Some(m), clients)
-      }.map{broker -> _}}.flatten.map { case (b, p) =>
-
-        val buf = Any.pack(p).toByteArray
-
-        val pr = Promise[Boolean]()
-        val broker = brokerPublishers(b)
-
-        broker.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build())
-          .addListener(() => pr.success(true), ec)
-
-        pr.future
-      }).map(_ => true)*/
 
       Future.sequence(delivery.map { case (broker, list) =>
         PostBatch(UUID.randomUUID.toString, broker, list.map{ case (m, clients) =>
@@ -210,7 +183,7 @@ object Worker {
           case Success(ok) =>
 
             tasks.foreach { t =>
-              queue.remove(t.id)
+              queue.remove(t.id).get._2.ack()
             }
 
             timer.schedule(new PublishTask(), 10L)
@@ -230,8 +203,6 @@ object Worker {
         println(s"${Console.GREEN_B}worker $name received task ${t}${Console.RESET}\n")
 
         queue.put(t.id, t -> consumer)
-
-        consumer.ack()
       }
     }
 
@@ -269,6 +240,7 @@ object Worker {
         ec.execute(() => {
           timer.cancel()
           taskPublisher.shutdown()
+          brokerPublishers.foreach(_._2.shutdown())
           tasksSubscriber.awaitTerminated()
         })
 

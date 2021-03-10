@@ -42,11 +42,17 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
     .setBatchingSettings(psettings)
     .build()
 
-  val commandPublisher = Publisher
-    .newBuilder(TopicName.of(Config.projectId, Topics.SUBSCRIPTIONS))
-    .setCredentialsProvider(FixedCredentialsProvider.create(GOOGLE_CREDENTIALS))
-    .setBatchingSettings(psettings)
-    .build()
+  val subPublishers = TrieMap.empty[String, Publisher]
+
+  for(i<-0 until Config.NUM_SUBSCRIBERS){
+    val publisher = Publisher
+      .newBuilder(TopicName.of(Config.projectId, s"subscriptions-$i"))
+      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
+      .setBatchingSettings(psettings)
+      .build()
+
+    subPublishers += i.toString -> publisher
+  }
 
   val receiver = new MessageReceiver {
     override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
@@ -81,17 +87,21 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
   subscriber.startAsync.awaitRunning()
 
-  def insertSubscription(cmd: Subscribe): Future[Boolean] = {
-    val data = ByteString.copyFrom(Any.pack(cmd).toByteArray)
+  def insertSubscription(topics: Seq[String], client: String): Future[Boolean] = {
+    Future.sequence(topics.map{t => t -> computeSubscriptionTopic(t)}.map{ case (topic, pid) => {
 
-    val pm = PubsubMessage.newBuilder().setData(data).build()
-    val pr = Promise[String]()
+      val cmd = Subscribe(UUID.randomUUID.toString, Seq(topic), client)
+      val data = ByteString.copyFrom(Any.pack(cmd).toByteArray)
 
-    ec.execute(() => {
-      pr.success(commandPublisher.publish(pm).get())
-    })
+      val pm = PubsubMessage.newBuilder().setData(data).build()
+      val pr = Promise[Boolean]()
 
-    pr.future.map(_ => true)
+      val publisher = subPublishers(pid)
+
+      publisher.publish(pm).addListener(() => pr.success(true), ec)
+
+      pr.future
+    }}).map(_ => true)
   }
 
   val vertx = Vertx.vertx()
@@ -227,11 +237,5 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 object Broker {
   object Config {
     val NUM_BROKERS = 3
-  }
-
-  val TOPIC = "services.scalable.pubsub.brokers"
-
-  def compute(id: String): Int = {
-    scala.util.hashing.byteswap32(id.##).abs % Config.NUM_BROKERS
   }
 }

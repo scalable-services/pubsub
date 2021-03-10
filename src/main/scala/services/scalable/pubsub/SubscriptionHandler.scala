@@ -4,17 +4,15 @@ import akka.actor.typed.Behavior
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.Behaviors
 import akka.cluster.pubsub.{DistributedPubSub, DistributedPubSubMediator}
-import com.google.api.gax.core.FixedCredentialsProvider
-import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber, SubscriptionAdminClient}
-import com.google.protobuf.ByteString
+import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber}
 import com.google.protobuf.any.Any
 import com.google.pubsub.v1.{ProjectSubscriptionName, PubsubMessage, TopicName}
 import services.scalable.index._
 import services.scalable.pubsub.grpc._
 
-import java.util.{TimerTask, UUID}
+import java.util.TimerTask
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.{Future, Promise}
+import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 object SubscriptionHandler {
