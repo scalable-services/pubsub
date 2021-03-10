@@ -1,6 +1,6 @@
 name := "pubsub"
 
-version := "0.1"
+version := "0.2"
 
 scalaVersion := "2.12.13"
 
@@ -40,6 +40,17 @@ libraryDependencies ++= Seq(
 
   "io.vertx" %% "vertx-kafka-client-scala" % VertxVersion,
   "io.vertx" %% "vertx-mqtt-scala" % VertxVersion,
+
+  "com.google.apis" % "google-api-services-cloudiot" % "v1-rev99-1.25.0",
+
+  "com.google.cloud" % "google-cloud-core" % "1.94.2",
+
+  "com.google.auth" % "google-auth-library-oauth2-http" % "0.24.1",
+
+  "com.google.api-client" % "google-api-client" % "1.31.1",
+
+  "com.google.cloud" % "google-cloud-pubsub" % "1.111.2"
+
 )
 
 enablePlugins(AkkaGrpcPlugin)

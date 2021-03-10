@@ -34,7 +34,7 @@ object Client {
     val response = Await.result(f, Duration.Inf)
 
     println(s"${Console.GREEN_B}RECEIVED RESPONSE ${response}${Console.RESET}")
-
+    
   }
 
 }

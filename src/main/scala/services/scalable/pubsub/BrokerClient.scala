@@ -54,6 +54,14 @@ object BrokerClient {
             }
           })
 
+          /*client.subscribe("demo", MqttQoS.AT_LEAST_ONCE.value(), (event: AsyncResult[Int]) => {
+            if(event.succeeded()){
+              println(s"successfully subed to topic demo...")
+            } else {
+              event.cause().printStackTrace()
+            }
+          })*/
+
         case Failure(ex) => ex.printStackTrace()
       }
 

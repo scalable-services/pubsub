@@ -13,11 +13,11 @@ import java.util.UUID
 import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future, Promise}
 
-class CommandsSpec extends AnyFlatSpec {
+class CommandSpec extends AnyFlatSpec {
 
   val logger = LoggerFactory.getLogger(this.getClass)
 
-  "it " should "publish commands in subscribers kafka topic" in {
+  /*"it " should "publish commands in subscribers kafka topic" in {
 
     val vertx = Vertx.vertx()
 
@@ -61,6 +61,6 @@ class CommandsSpec extends AnyFlatSpec {
     val result = Await.result(post(subscriptions), Duration.Inf)
 
     logger.info(s"result: ${result}")
-  }
+  }*/
 
 }

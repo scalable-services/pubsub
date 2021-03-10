@@ -17,8 +17,8 @@ message HelloResponse {
 
 message Subscribe {
   string id = 1;
-  string topic = 2;
-  string kafka_partition = 3;
+  repeated string topics = 2;
+  string brokerId = 3;
   string subscriber = 4;
 }
 

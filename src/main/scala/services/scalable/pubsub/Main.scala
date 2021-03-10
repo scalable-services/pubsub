@@ -42,7 +42,7 @@ object Main {
 
       val daemon =  ShardedDaemonProcess(context.system)
 
-      daemon.init("subscribers", SUBSCRIBERS.length, id => Subscriber(SUBSCRIBERS(id), id), Subscriber.Stop)
+      daemon.init("subscribers", SUBSCRIBERS.length, id => SubscriptionHandler(SUBSCRIBERS(id), id), SubscriptionHandler.Stop)
       daemon.init("workers", WORKERS.length, id => Worker(WORKERS(id)), Worker.Stop)
 
       Behaviors.empty
@@ -56,16 +56,6 @@ object Main {
         Seq(2551, 2552)
       else
         args.toSeq.map(_.toInt)
-
-    val topics = Map(
-      Topics.SUBSCRIPTIONS -> 1,
-      Topics.TASKS -> 3,
-      Broker.TOPIC -> Broker.Config.NUM_BROKERS
-    )
-
-    Await.result(KafkaAdminHelper.create(topics).map { _ =>
-      println(s"${Console.BLUE_B}created topics: ${topics}...${Console.RESET}\n\n")
-    }, Duration.Inf)
 
     val basePort = 3000
 

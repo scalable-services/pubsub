@@ -1,16 +1,41 @@
 package services.scalable
 
 import com.datastax.oss.driver.api.core.config.{DefaultDriverOption, DriverConfigLoader}
+import com.google.api.gax.batching.{BatchingSettings, FlowControlSettings}
 import io.vertx.scala.core.VertxOptions
 
 import java.time.Duration
 import java.util.concurrent.{CompletionStage, TimeUnit}
+import scala.collection.concurrent.TrieMap
 import scala.compat.java8.FutureConverters.toScala
 import scala.concurrent.Future
 
 package object pubsub {
 
+  val brokerClients = TrieMap.empty[String, String]
+
   implicit def asScalaFuture[T](cs: CompletionStage[T]): Future[T] = toScala(cs)
+
+  val  requestBytesThreshold = 5000L // default : 1 byte
+  val messageCountBatchSize = 100L // default : 1 message
+
+  val publishDelayThreshold = org.threeten.bp.Duration.ofMillis(100)
+
+  val psettings = BatchingSettings.newBuilder()
+    .setElementCountThreshold(messageCountBatchSize)
+    .setRequestByteThreshold(requestBytesThreshold)
+    .setDelayThreshold(publishDelayThreshold)
+    .build()
+
+  val flowControlSettings =
+    FlowControlSettings.newBuilder()
+      // 1,000 outstanding messages. Must be >0. It controls the maximum number of messages
+      // the subscriber receives before pausing the message stream.
+      .setMaxOutstandingElementCount(100L)
+      // 100 MiB. Must be >0. It controls the maximum size of messages the subscriber
+      // receives before pausing the message stream.
+      .setMaxOutstandingRequestBytes(100L * 1024L * 1024L)
+      .build()
 
   val loader =
     DriverConfigLoader.programmaticBuilder()
@@ -37,15 +62,17 @@ package object pubsub {
 
     val KEYSPACE = "pubsub"
 
+    val projectId = "fir-91406"
+    val projectRegion = "us-central1"
+
     val KAFKA_HOST = "localhost:9092"
     val ZOOKEEPER_HOST = "localhost:2181"
   }
 
   object Topics {
-    val SUBSCRIPTIONS = "services.scalable.pubsub.subscriptions"
-    val TASKS = "services.scalable.pubsub.tasks"
-
-    val EVENTS = "services.scalable.pubsub.events"
+    val TASKS = "tasks"
+    val COMMANDS = "commands"
+    val EVENTS = "worker-events"
   }
 
   val SUBSCRIBERS = (0 until Config.NUM_SUBSCRIBERS).map(s => s"subscriber-$s")
