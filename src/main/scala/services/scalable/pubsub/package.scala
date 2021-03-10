@@ -2,8 +2,12 @@ package services.scalable
 
 import com.datastax.oss.driver.api.core.config.{DefaultDriverOption, DriverConfigLoader}
 import com.google.api.gax.batching.{BatchingSettings, FlowControlSettings}
+import com.google.api.gax.core.FixedCredentialsProvider
+import com.google.auth.oauth2.GoogleCredentials
+import com.google.common.collect.Lists
 import io.vertx.scala.core.VertxOptions
 
+import java.io.FileInputStream
 import java.time.Duration
 import java.util.concurrent.{CompletionStage, TimeUnit}
 import scala.collection.concurrent.TrieMap
@@ -31,7 +35,7 @@ package object pubsub {
     FlowControlSettings.newBuilder()
       // 1,000 outstanding messages. Must be >0. It controls the maximum number of messages
       // the subscriber receives before pausing the message stream.
-      .setMaxOutstandingElementCount(100L)
+      .setMaxOutstandingElementCount(10L)
       // 100 MiB. Must be >0. It controls the maximum size of messages the subscriber
       // receives before pausing the message stream.
       .setMaxOutstandingRequestBytes(100L * 1024L * 1024L)
@@ -71,11 +75,15 @@ package object pubsub {
 
   object Topics {
     val TASKS = "tasks"
-    val COMMANDS = "commands"
+    val SUBSCRIPTIONS = "subscriptions"
     val EVENTS = "worker-events"
   }
 
   val SUBSCRIBERS = (0 until Config.NUM_SUBSCRIBERS).map(s => s"subscriber-$s")
   val WORKERS = (0 until Config.NUM_WORKERS).map(w => s"worker-$w")
 
+  val GOOGLE_CREDENTIALS = GoogleCredentials.fromStream(new FileInputStream("fir-91406-48f16c08907e.json"))
+    .createScoped(Lists.newArrayList("https://www.googleapis.com/auth/cloud-platform"))
+
+  val GOOGLE_CREDENTIALS_PROVIDER = FixedCredentialsProvider.create(GOOGLE_CREDENTIALS)
 }

@@ -33,7 +33,9 @@ object BrokerClient {
       val options = MqttClientOptions().setClientId(cid)
       val client = MqttClient.create(vertx, options)
 
-      client.connectFuture(port, "localhost").onComplete {
+      //val external_ip = "191.220.109.193"
+
+      client.connectFuture(port, "192.168.1.66").onComplete {
         case Success(ok) =>
 
           client.publishHandler((s: MqttPublishMessage) => {

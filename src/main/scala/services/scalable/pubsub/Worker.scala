@@ -5,6 +5,7 @@ import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.scaladsl.adapter._
 import akka.cluster.pubsub.{DistributedPubSub, DistributedPubSubMediator}
+import com.google.api.gax.core.FixedCredentialsProvider
 import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber}
 import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
@@ -47,14 +48,18 @@ object Worker {
     val indexes = TrieMap.empty[String, Index[String, Bytes, Bytes]]
 
     for(i<-0 until Broker.Config.NUM_BROKERS){
-      val publisher = Publisher.newBuilder(TopicName.of(Config.projectId, s"broker-$i"))
+      val publisher = Publisher
+        .newBuilder(TopicName.of(Config.projectId, s"broker-$i"))
+        .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
         .setBatchingSettings(psettings)
         .build()
 
       brokerPublishers += i.toString -> publisher
     }
 
-    val taskPublisher = Publisher.newBuilder(TopicName.of(Config.projectId, Topics.TASKS))
+    val taskPublisher = Publisher
+      .newBuilder(TopicName.of(Config.projectId, Topics.TASKS))
+      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
       .setBatchingSettings(psettings)
       .build()
 
@@ -95,6 +100,14 @@ object Worker {
         }
       }
 
+      /*return storage.load(indexId).flatMap { ctx =>
+
+        val index = new Index[String, Bytes, Bytes]()(ec, ctx)
+        indexes.put(indexId, index)
+
+        getSubscriptions(index)
+      }*/
+
       getSubscriptions(indexes(indexId))
     }
 
@@ -105,6 +118,9 @@ object Worker {
       if(msgs.isEmpty) return Future.successful(true)
 
       Future.sequence(msgs.map { case (m, subscribers) =>
+
+        logger.info(s"\n\n${Console.BLUE_B}subscribers: ${subscribers}\n\n${Console.RESET}")
+
         Future.sequence(subscribers.groupBy(_._2).map { case (partition, subscribers) =>
 
           val post = Post(UUID.randomUUID.toString, Some(m), subscribers.map(_._1))
@@ -128,7 +144,7 @@ object Worker {
         val tasks = queue.map(_._2._1).toSeq
 
         if(tasks.isEmpty){
-          timer.schedule(new PublishTask(), 100L)
+          timer.schedule(new PublishTask(), 10L)
           return
         }
 
@@ -155,7 +171,7 @@ object Worker {
                 queue.remove(t.id)
               }
 
-              timer.schedule(new PublishTask(), 100L)
+              timer.schedule(new PublishTask(), 10L)
 
             case Failure(ex) => ex.printStackTrace()
           }
@@ -163,7 +179,7 @@ object Worker {
       }
     }
 
-    timer.schedule(new PublishTask(), 100L)
+    timer.schedule(new PublishTask(), 10L)
 
     val tasksReceiver = new MessageReceiver {
       override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
@@ -178,7 +194,9 @@ object Worker {
       }
     }
 
-    val tasksSubscriber = Subscriber.newBuilder(tasksSubscriptionName, tasksReceiver)
+    val tasksSubscriber = Subscriber
+      .newBuilder(tasksSubscriptionName, tasksReceiver)
+      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
       .setFlowControlSettings(flowControlSettings)
       .build()
 
@@ -197,7 +215,7 @@ object Worker {
               i.NUM_META_ENTRIES)
             val index = new Index[String, Bytes, Bytes]()(ec, ctx)
 
-            indexes.update(idx, index)
+            indexes.put(idx, index)
           }
         }
 

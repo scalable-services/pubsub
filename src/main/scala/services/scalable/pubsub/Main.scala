@@ -6,6 +6,8 @@ import akka.actor.typed.{ActorSystem, Behavior}
 import akka.cluster.sharding.typed.ShardedDaemonProcessSettings
 import akka.cluster.sharding.typed.scaladsl.{ClusterSharding, Entity, EntityTypeKey, ShardedDaemonProcess}
 import akka.util.Timeout
+import com.google.auth.oauth2.GoogleCredentials
+import com.google.common.collect.Lists
 import com.typesafe.config.ConfigFactory
 import services.scalable.index.impl.{CassandraStorage, DefaultCache}
 
@@ -13,6 +15,8 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import services.scalable.index._
+
+import java.io.FileInputStream
 
 object Main {
 
@@ -60,7 +64,7 @@ object Main {
     val basePort = 3000
 
     for(i<-0 until Broker.Config.NUM_BROKERS){
-      val broker = new Broker(i.toString, "0.0.0.0", basePort + i)
+      val broker = new Broker(i.toString, "192.168.1.66", basePort + i)
     }
 
     ports.foreach(startup)

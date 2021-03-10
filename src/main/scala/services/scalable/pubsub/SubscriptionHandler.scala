@@ -4,7 +4,8 @@ import akka.actor.typed.Behavior
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.Behaviors
 import akka.cluster.pubsub.{DistributedPubSub, DistributedPubSubMediator}
-import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber}
+import com.google.api.gax.core.FixedCredentialsProvider
+import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber, SubscriptionAdminClient}
 import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
 import com.google.pubsub.v1.{ProjectSubscriptionName, PubsubMessage, TopicName}
@@ -68,7 +69,7 @@ object SubscriptionHandler {
       addSubscribers(index, ctx)
     }
 
-    val subscriptionId = s"commands-sub"
+    val subscriptionId = s"subscriptions-sub"
     val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
 
     val queue = TrieMap.empty[String, (Subscribe, AckReplyConsumer)]
@@ -86,7 +87,7 @@ object SubscriptionHandler {
         val commands = queue.map(_._2._1).toSeq
 
         if(commands.isEmpty){
-          timer.schedule(new CommandTask(), 100L)
+          timer.schedule(new CommandTask(), 10L)
           return
         }
 
@@ -119,18 +120,21 @@ object SubscriptionHandler {
             }
 
             if(!roots.isEmpty){
-              val evt = Worker.IndexChanged(distinct.map{case (topic, _) => topic -> indexes(s"${topic}_subscribers")._2.root})
+              val evt = Worker.IndexChanged(distinct.map{case (topic, _) =>
+                val topic_name = s"${topic}_subscribers"
+
+                topic_name -> indexes(topic_name)._2.root})
               mediator ! DistributedPubSubMediator.Publish(Topics.EVENTS, evt)
             }
 
-            timer.schedule(new CommandTask(), 100L)
+            timer.schedule(new CommandTask(), 10L)
 
           case Failure(ex) => ex.printStackTrace()
         }
       }
     }
 
-    timer.schedule(new CommandTask(), 100L)
+    timer.schedule(new CommandTask(), 10L)
 
     val receiver = new MessageReceiver {
       override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
@@ -149,7 +153,9 @@ object SubscriptionHandler {
       }
     }
 
-    val subscriber = Subscriber.newBuilder(subscriptionName, receiver)
+    val subscriber = Subscriber
+      .newBuilder(subscriptionName, receiver)
+      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
       .setFlowControlSettings(flowControlSettings)
       .build()
 

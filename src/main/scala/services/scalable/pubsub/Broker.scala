@@ -1,6 +1,7 @@
 package services.scalable.pubsub
 
 import com.datastax.oss.driver.api.core.CqlSession
+import com.google.api.gax.core.FixedCredentialsProvider
 import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber}
 import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
@@ -35,16 +36,22 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
   val subscriptionId = s"broker-$id-sub"
   val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
 
-  val taskPublisher = Publisher.newBuilder(TopicName.of(Config.projectId, Topics.TASKS))
+  val taskPublisher = Publisher
+    .newBuilder(TopicName.of(Config.projectId, Topics.TASKS))
+    .setCredentialsProvider(FixedCredentialsProvider.create(GOOGLE_CREDENTIALS))
     .setBatchingSettings(psettings)
     .build()
 
-  val commandPublisher = Publisher.newBuilder(TopicName.of(Config.projectId, Topics.COMMANDS))
+  val commandPublisher = Publisher
+    .newBuilder(TopicName.of(Config.projectId, Topics.SUBSCRIPTIONS))
+    .setCredentialsProvider(FixedCredentialsProvider.create(GOOGLE_CREDENTIALS))
     .setBatchingSettings(psettings)
     .build()
 
   val receiver = new MessageReceiver {
     override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
+
+      logger.info(s"${Console.GREEN_B}broker-$id received message: ${message}${Console.RESET}")
 
       val post = Any.parseFrom(message.getData.toByteArray).unpack(Post)
 
