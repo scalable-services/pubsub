@@ -58,35 +58,20 @@ object Worker {
       .setBatchingSettings(psettings)
       .build()
 
-    def publishBroker(post: Post, broker: String): Future[Boolean] = {
-      val pm = PubsubMessage.newBuilder().setData(ByteString.copyFrom(Any.pack(post).toByteArray)).build()
+    def publishTasks(tasks: Seq[Task]): Future[Boolean] = {
+      if(tasks.isEmpty) return Future.successful(true)
 
-      val pr = Promise[String]()
+      Future.sequence(tasks.map { t =>
 
-      val publisher = brokerPublishers(broker)
+        val buf = Any.pack(t).toByteArray
+        val pr = Promise[Boolean]()
 
-      ec.execute(() => {
-        pr.success(publisher.publish(pm).get())
-      })
+        taskPublisher.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build()).addListener(() => {
+          pr.success(true)
+        }, ec)
 
-      pr.future.map(_ => true)
-    }
-
-    def publishTask(m: Message, last: Option[String]): Future[Boolean] = {
-
-      if(last.isEmpty) return Future.successful(true)
-
-      // Next batch of subscribers...
-      val task = Task(UUID.randomUUID.toString, Some(m), last.get)
-      val pm = PubsubMessage.newBuilder().setData(ByteString.copyFrom(Any.pack(task).toByteArray)).build()
-
-      val pr = Promise[String]()
-
-      ec.execute(() => {
-        pr.success(taskPublisher.publish(pm).get())
-      })
-
-      pr.future.map(_ => true)
+        pr.future
+      }).map(_ => true)
     }
 
     def getSubscriptions(topic: String, last: String = ""): Future[(Seq[(String, String)], Option[String])] = {
@@ -116,40 +101,64 @@ object Worker {
     val queue = TrieMap.empty[String, (Task, AckReplyConsumer)]
     val timer = new java.util.Timer()
 
+    def post(msgs: Seq[(Message, Seq[(String, String)])]): Future[Boolean] = {
+      if(msgs.isEmpty) return Future.successful(true)
+
+      Future.sequence(msgs.map { case (m, subscribers) =>
+        Future.sequence(subscribers.groupBy(_._2).map { case (partition, subscribers) =>
+
+          val post = Post(UUID.randomUUID.toString, Some(m), subscribers.map(_._1))
+          val buf = Any.pack(post).toByteArray
+
+          val broker = brokerPublishers(partition)
+
+          val pr = Promise[Boolean]()
+
+          broker.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build())
+          .addListener(() => pr.success(true), ec)
+
+          pr.future
+        })
+      }).map(_ => true)
+    }
+
     class PublishTask extends TimerTask {
       override def run(): Unit = {
 
-        val commands = queue.map(_._2._1).toSeq
+        val tasks = queue.map(_._2._1).toSeq
 
-        if(commands.isEmpty){
+        if(tasks.isEmpty){
           timer.schedule(new PublishTask(), 100L)
           return
         }
-        
-        Future.sequence(commands.map{t => getSubscriptions(t.message.get.topic, t.lastBlock).map(t.message.get -> _)}).flatMap { subscriptions =>
-          Future.sequence(subscriptions.map { case (m, (subscribers, last)) =>
 
-            publishTask(m, last).flatMap { ok =>
-              val brokers = subscribers.map{ case (s, _) => brokerClients(s) -> s}.groupBy(_._1).map{case (broker, list) =>
-                broker -> list.map(_._2)
+        Future.sequence(tasks.map{t => getSubscriptions(t.message.get.topic, t.lastBlock).map{t.message.get -> _}}).flatMap { subs =>
+
+          val list = subs.filterNot(_._2._1.isEmpty)
+
+          var lasts = Seq.empty[(Message, String)]
+
+          val brokers = list.map { case (m, (subs, last)) =>
+            if(last.isDefined){
+              lasts = lasts :+ (m -> last.get)
+            }
+
+            m -> subs
+          }
+
+          post(brokers).flatMap(_ => publishTasks(lasts.map { case (m, last) =>
+            Task(UUID.randomUUID.toString, Some(m), last)
+          }))}.onComplete {
+            case Success(ok) =>
+
+              tasks.foreach { t =>
+                queue.remove(t.id)
               }
 
-              Future.sequence(brokers.map { case (b, list) =>
-                val post = Post(UUID.randomUUID.toString, Some(m), list)
-                publishBroker(post, b)
-              })
-            }
-          })
-        }.onComplete {
-          case Success(ok) =>
+              timer.schedule(new PublishTask(), 100L)
 
-            commands.foreach { t =>
-              queue.remove(t.id).get._2.ack()
-            }
-
-            timer.schedule(new PublishTask(), 100L)
-          case Failure(ex) => ex.printStackTrace()
-        }
+            case Failure(ex) => ex.printStackTrace()
+          }
 
       }
     }
@@ -164,6 +173,8 @@ object Worker {
         println(s"${Console.GREEN_B}worker $name received task ${t}${Console.RESET}\n")
 
         queue.put(t.id, t -> consumer)
+
+        consumer.ack()
       }
     }
 
