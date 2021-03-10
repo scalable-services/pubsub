@@ -266,12 +266,11 @@ object Worker {
 
         ctx.log.info(s"${Console.RED_B}WORKER IS STOPPING: ${name}${Console.RESET}\n")
 
-        /*taskPublisher.shutdown()
-        tasksSubscriber.awaitTerminated()*/
-
-        /*for {
-
-        } yield {}*/
+        ec.execute(() => {
+          timer.cancel()
+          taskPublisher.shutdown()
+          tasksSubscriber.awaitTerminated()
+        })
 
         Behaviors.stopped
       case _ => Behaviors.empty

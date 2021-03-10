@@ -168,6 +168,11 @@ object SubscriptionHandler {
 
         //subscriber.awaitTerminated()
 
+        ec.execute(() => {
+          timer.cancel()
+          subscriber.awaitTerminated()
+        })
+
         /*for {
 
         } yield {}*/
