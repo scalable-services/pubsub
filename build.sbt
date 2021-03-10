@@ -50,7 +50,6 @@ libraryDependencies ++= Seq(
   "com.google.api-client" % "google-api-client" % "1.31.1",
 
   "com.google.cloud" % "google-cloud-pubsub" % "1.111.2"
-
 )
 
 enablePlugins(AkkaGrpcPlugin)

@@ -55,7 +55,7 @@ object SubscriptionHandler {
       }
 
       if(!indexes.isDefinedAt(indexId)) {
-        return storage.loadOrCreate(indexId, 5, 5).flatMap{ ctx =>
+        return storage.loadOrCreate(indexId, Config.NUM_LEAF_ENTRIES, Config.NUM_META_ENTRIES).flatMap{ ctx =>
 
           val index = new Index[String, Bytes, Bytes]()(ec, ctx)
           indexes.put(indexId, index -> ctx)
@@ -165,6 +165,8 @@ object SubscriptionHandler {
       case Stop =>
 
         ctx.log.info(s"${Console.RED_B}subscription handler $name is stopping${Console.RESET}\n")
+
+        //subscriber.awaitTerminated()
 
         /*for {
 

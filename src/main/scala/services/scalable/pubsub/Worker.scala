@@ -91,24 +91,29 @@ object Worker {
       }
 
       if(!indexes.isDefinedAt(indexId)){
-        return storage.load(indexId).flatMap { ctx =>
+        return storage.loadOrCreate(indexId, Config.NUM_LEAF_ENTRIES, Config.NUM_META_ENTRIES)
+          .flatMap { ctx =>
 
           val index = new Index[String, Bytes, Bytes]()(ec, ctx)
           indexes.put(indexId, index)
 
           getSubscriptions(index)
+        }.recover {
+          case _ => Seq.empty[(String, String)] -> None
         }
       }
 
-      /*return storage.load(indexId).flatMap { ctx =>
-
-        val index = new Index[String, Bytes, Bytes]()(ec, ctx)
-        indexes.put(indexId, index)
-
-        getSubscriptions(index)
-      }*/
-
       getSubscriptions(indexes(indexId))
+
+      /*storage.load(indexId).flatMap { ctx =>
+
+          val index = new Index[String, Bytes, Bytes]()(ec, ctx)
+          indexes.put(indexId, index)
+
+          getSubscriptions(index)
+        }.recover {
+            case _ => Seq.empty[(String, String)] -> None
+        }*/
     }
 
     val queue = TrieMap.empty[String, (Task, AckReplyConsumer)]
@@ -117,7 +122,39 @@ object Worker {
     def post(msgs: Seq[(Message, Seq[(String, String)])]): Future[Boolean] = {
       if(msgs.isEmpty) return Future.successful(true)
 
-      Future.sequence(msgs.map { case (m, subscribers) =>
+      val delivery = TrieMap.empty[String, Seq[(Message, Seq[String])]]
+
+      msgs.foreach { case (m, subscribers) =>
+        subscribers.map(_._1).groupBy(brokerClients(_)).foreach { case (broker, clients) =>
+          delivery.get(broker) match {
+            case None =>
+
+              delivery.put(broker, Seq(m -> clients))
+
+            case Some(list) => delivery.put(broker, list :+ (m -> clients))
+          }
+        }
+      }
+
+      Future.sequence(delivery.map{case (broker, list) => list.map{case (m, clients) =>
+
+        logger.info(s"\n\n${Console.BLUE_B}subscribers: ${clients}\n\n${Console.RESET}")
+
+        Post(UUID.randomUUID.toString, Some(m), clients)
+      }.map{broker -> _}}.flatten.map { case (b, p) =>
+
+        val buf = Any.pack(p).toByteArray
+
+        val pr = Promise[Boolean]()
+        val broker = brokerPublishers(b)
+
+        broker.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build())
+          .addListener(() => pr.success(true), ec)
+
+        pr.future
+      }).map(_ => true)
+
+      /*Future.sequence(msgs.map { case (m, subscribers) =>
 
         logger.info(s"\n\n${Console.BLUE_B}subscribers: ${subscribers}\n\n${Console.RESET}")
 
@@ -135,7 +172,7 @@ object Worker {
 
           pr.future
         })
-      }).map(_ => true)
+      }).map(_ => true)*/
     }
 
     class PublishTask extends TimerTask {
@@ -143,39 +180,45 @@ object Worker {
 
         val tasks = queue.map(_._2._1).toSeq
 
-        if(tasks.isEmpty){
+        if (tasks.isEmpty) {
           timer.schedule(new PublishTask(), 10L)
           return
         }
 
-        Future.sequence(tasks.map{t => getSubscriptions(t.message.get.topic, t.lastBlock).map{t.message.get -> _}}).flatMap { subs =>
+        Future.sequence(tasks.map { t =>
+          getSubscriptions(t.message.get.topic, t.lastBlock)
+            .map {
+              t.message.get -> _
+            }
+        }).flatMap { subs =>
 
           val list = subs.filterNot(_._2._1.isEmpty)
 
           var lasts = Seq.empty[(Message, String)]
 
           val brokers = list.map { case (m, (subs, last)) =>
-            if(last.isDefined){
+            if (last.isDefined) {
               lasts = lasts :+ (m -> last.get)
             }
 
             m -> subs
           }
 
-          post(brokers).flatMap(_ => publishTasks(lasts.map { case (m, last) =>
+          Future.sequence(Seq(post(brokers), publishTasks(lasts.map { case (m, last) =>
             Task(UUID.randomUUID.toString, Some(m), last)
-          }))}.onComplete {
-            case Success(ok) =>
+          })))
 
-              tasks.foreach { t =>
-                queue.remove(t.id)
-              }
+        }.onComplete {
+          case Success(ok) =>
 
-              timer.schedule(new PublishTask(), 10L)
+            tasks.foreach { t =>
+              queue.remove(t.id)
+            }
 
-            case Failure(ex) => ex.printStackTrace()
-          }
+            timer.schedule(new PublishTask(), 10L)
 
+          case Failure(ex) => ex.printStackTrace()
+        }
       }
     }
 
@@ -209,7 +252,7 @@ object Worker {
 
         roots.foreach { case (idx, root) =>
           if(indexes.isDefinedAt(idx)){
-            val i = indexes(idx).asInstanceOf[DefaultContext]
+            val i = indexes(idx).ctx
 
             val ctx = new DefaultContext(i.indexId, root, i.NUM_LEAF_ENTRIES,
               i.NUM_META_ENTRIES)
@@ -224,6 +267,9 @@ object Worker {
       case Stop =>
 
         ctx.log.info(s"${Console.RED_B}WORKER IS STOPPING: ${name}${Console.RESET}\n")
+
+        /*taskPublisher.shutdown()
+        tasksSubscriber.awaitTerminated()*/
 
         /*for {
 

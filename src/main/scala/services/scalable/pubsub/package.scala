@@ -61,6 +61,9 @@ package object pubsub {
   type TPartition = io.vertx.kafka.client.common.TopicPartition
 
   object Config {
+    val NUM_LEAF_ENTRIES = 10
+    val NUM_META_ENTRIES = 10
+
     val NUM_SUBSCRIBERS = 1
     val NUM_WORKERS = 3
 
