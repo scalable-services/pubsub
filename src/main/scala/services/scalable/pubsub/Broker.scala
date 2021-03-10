@@ -90,7 +90,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
   def insertSubscription(topics: Seq[String], client: String): Future[Boolean] = {
     Future.sequence(topics.map{t => t -> computeSubscriptionTopic(t)}.map{ case (topic, pid) => {
 
-      val cmd = Subscribe(UUID.randomUUID.toString, Seq(topic), client)
+      val cmd = Subscribe(UUID.randomUUID.toString, Seq(topic), id, client)
       val data = ByteString.copyFrom(Any.pack(cmd).toByteArray)
 
       val pm = PubsubMessage.newBuilder().setData(data).build()
@@ -151,7 +151,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
       topics = topics.distinct
 
       if(!topics.isEmpty){
-        insertSubscription(Subscribe(UUID.randomUUID.toString, topics, id, client)).onComplete {
+        insertSubscription(topics, client).onComplete {
           case Success(ok) => println(s"subscriptions ${topics} for broker ${id} inserted!!!\n")
           case Failure(ex) => ex.printStackTrace()
         }
