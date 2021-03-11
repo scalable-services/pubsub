@@ -86,7 +86,7 @@ package object pubsub {
   val SUBSCRIBERS = (0 until Config.NUM_SUBSCRIBERS).map(s => s"subscription-$s")
   val WORKERS = (0 until Config.NUM_WORKERS).map(w => s"worker-$w")
 
-  val GOOGLE_CREDENTIALS = GoogleCredentials.fromStream(new FileInputStream("fir-91406-48f16c08907e.json"))
+  val GOOGLE_CREDENTIALS = GoogleCredentials.fromStream(new FileInputStream("google_cloud_credentials.json"))
     .createScoped(Lists.newArrayList("https://www.googleapis.com/auth/cloud-platform"))
 
   val GOOGLE_CREDENTIALS_PROVIDER = FixedCredentialsProvider.create(GOOGLE_CREDENTIALS)
