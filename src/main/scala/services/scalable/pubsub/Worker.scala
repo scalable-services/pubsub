@@ -1,6 +1,6 @@
 package services.scalable.pubsub
 
-import akka.actor.typed.Behavior
+import akka.actor.typed.{Behavior, PostStop}
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.scaladsl.adapter._
@@ -90,8 +90,8 @@ object Worker {
         }
       }
 
-      if(!indexes.isDefinedAt(indexId)){
-        return storage.loadOrCreate(indexId, Config.NUM_LEAF_ENTRIES, Config.NUM_META_ENTRIES)
+      /*if(!indexes.isDefinedAt(indexId)){
+        return storage.load(indexId, Config.NUM_LEAF_ENTRIES, Config.NUM_META_ENTRIES)
           .flatMap { ctx =>
 
           val index = new Index[String, Bytes, Bytes]()(ec, ctx)
@@ -101,9 +101,20 @@ object Worker {
         }.recover {
           case _ => Seq.empty[(String, String)] -> None
         }
-      }
+      }*/
 
-      getSubscriptions(indexes(indexId))
+      //getSubscriptions(indexes(indexId))
+
+      storage.load(indexId)
+        .flatMap { ctx =>
+
+          val index = new Index[String, Bytes, Bytes]()(ec, ctx)
+          indexes.put(indexId, index)
+
+          getSubscriptions(index)
+        }.recover {
+        case _ => Seq.empty[(String, String)] -> None
+      }
     }
 
     val queue = TrieMap.empty[String, (Task, AckReplyConsumer)]
@@ -156,8 +167,7 @@ object Worker {
           return
         }
 
-        Future.sequence(tasks.map { t =>
-          getSubscriptions(t.message.get.topic, t.lastBlock)
+        Future.sequence(tasks.map { t => getSubscriptions(t.message.get.topic, t.lastBlock)
             .map {
               t.message.get -> _
             }
@@ -214,7 +224,7 @@ object Worker {
 
     tasksSubscriber.startAsync.awaitRunning()
 
-    Behaviors.receiveMessage {
+    Behaviors.receiveMessage[WorkerMessage] {
       case IndexChanged(roots) =>
 
         logger.info(s"\n${Console.CYAN_B}${name} RECEIVED PUBSUB MESSAGE: ${roots}${Console.RESET}\n")
@@ -235,17 +245,30 @@ object Worker {
 
       case Stop =>
 
+        /*ctx.log.info(s"${Console.RED_B}WORKER IS STOPPING: ${name}${Console.RESET}\n")
+
+        ec.execute(() => {
+          timer.cancel()
+          taskPublisher.shutdown()
+          brokerPublishers.foreach(_._2.shutdown())
+          tasksSubscriber.stopAsync().awaitTerminated()
+        })*/
+
+        Behaviors.stopped
+      //case _ => Behaviors.empty
+    }.receiveSignal {
+      case (context, PostStop) =>
+
         ctx.log.info(s"${Console.RED_B}WORKER IS STOPPING: ${name}${Console.RESET}\n")
 
         ec.execute(() => {
           timer.cancel()
           taskPublisher.shutdown()
           brokerPublishers.foreach(_._2.shutdown())
-          tasksSubscriber.awaitTerminated()
+          tasksSubscriber.stopAsync().awaitTerminated()
         })
 
-        Behaviors.stopped
-      case _ => Behaviors.empty
+        Behaviors.same
     }
   }
 

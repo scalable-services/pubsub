@@ -17,6 +17,7 @@ import services.scalable.pubsub.grpc._
 
 import java.nio.charset.Charset
 import java.util.UUID
+import java.util.concurrent.Executor
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.util.{Failure, Success}
@@ -38,7 +39,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
   val taskPublisher = Publisher
     .newBuilder(TopicName.of(Config.projectId, Topics.TASKS))
-    .setCredentialsProvider(FixedCredentialsProvider.create(GOOGLE_CREDENTIALS))
+    .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
     .setBatchingSettings(psettings)
     .build()
 
@@ -82,26 +83,28 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
   }
 
   val subscriber = Subscriber.newBuilder(subscriptionName, receiver)
+    .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
     .setFlowControlSettings(flowControlSettings)
     .build()
 
   subscriber.startAsync.awaitRunning()
 
   def insertSubscription(topics: Seq[String], client: String): Future[Boolean] = {
-    Future.sequence(topics.map{t => t -> computeSubscriptionTopic(t)}.map{ case (topic, pid) => {
+    Future.sequence(topics.map{t => t -> computeSubscriptionTopic(t)}.groupBy(_._2).map { case (pid, topics) =>
 
-      val cmd = Subscribe(UUID.randomUUID.toString, Seq(topic), id, client)
+      val cmd = Subscribe(UUID.randomUUID.toString, topics.map(_._1), id, client)
       val data = ByteString.copyFrom(Any.pack(cmd).toByteArray)
 
       val pm = PubsubMessage.newBuilder().setData(data).build()
       val pr = Promise[Boolean]()
 
-      val publisher = subPublishers(pid)
+      logger.info(s"\n${Console.YELLOW_B}topic: ${topics.map(_._1)} pid: ${pid}${Console.RESET}\n")
+      val publisher = subPublishers(pid.toString)
 
-      publisher.publish(pm).addListener(() => pr.success(true), ec)
+      publisher.publish(pm).addListener(() => pr.success(true), ec.asInstanceOf[Executor])
 
       pr.future
-    }}).map(_ => true)
+    }).map(!_.exists(_ == false))
   }
 
   val vertx = Vertx.vertx()
@@ -125,14 +128,14 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
     // shows main connect info
     logger.info(s"MQTT client [${endpoint.clientIdentifier()}] request to connect, clean session = ${endpoint.isCleanSession()}")
 
-    if (endpoint.auth() != null) {
+    /*if (endpoint.auth() != null) {
       val auth = endpoint.auth().asJava
       logger.info(s"[username = ${auth.getUsername}, password = ${auth.getPassword}]")
     }
     if (endpoint.will() != null) {
       val will = endpoint.will().asJava
       logger.info(s"[will topic = ${will.getWillTopic} msg = ${if(will.getWillMessageBytes != null) new String(will.getWillMessageBytes) else null} QoS = ${will.getWillQos} isRetain = ${will.isWillRetain}]")
-    }
+    }*/
 
     logger.info(s"[keep alive timeout = ${endpoint.keepAliveTimeSeconds()}]")
 
@@ -152,7 +155,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
       if(!topics.isEmpty){
         insertSubscription(topics, client).onComplete {
-          case Success(ok) => println(s"subscriptions ${topics} for broker ${id} inserted!!!\n")
+          case Success(ok) => println(s"subscriptions ${topics} for $client inserted!!!\n")
           case Failure(ex) => ex.printStackTrace()
         }
       }

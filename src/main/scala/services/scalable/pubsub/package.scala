@@ -24,7 +24,7 @@ package object pubsub {
   val  requestBytesThreshold = 5000L // default : 1 byte
   val messageCountBatchSize = 100L // default : 1 message
 
-  val publishDelayThreshold = org.threeten.bp.Duration.ofMillis(100)
+  val publishDelayThreshold = org.threeten.bp.Duration.ofMillis(10)
 
   val psettings = BatchingSettings.newBuilder()
     .setElementCountThreshold(messageCountBatchSize)
@@ -36,7 +36,7 @@ package object pubsub {
     FlowControlSettings.newBuilder()
       // 1,000 outstanding messages. Must be >0. It controls the maximum number of messages
       // the subscriber receives before pausing the message stream.
-      .setMaxOutstandingElementCount(10L)
+      .setMaxOutstandingElementCount(100L)
       // 100 MiB. Must be >0. It controls the maximum size of messages the subscriber
       // receives before pausing the message stream.
       .setMaxOutstandingRequestBytes(100L * 1024L * 1024L)
@@ -83,7 +83,7 @@ package object pubsub {
     val EVENTS = "worker-events"
   }
 
-  val SUBSCRIBERS = (0 until Config.NUM_SUBSCRIBERS).map(s => s"subscriber-$s")
+  val SUBSCRIBERS = (0 until Config.NUM_SUBSCRIBERS).map(s => s"subscription-$s")
   val WORKERS = (0 until Config.NUM_WORKERS).map(w => s"worker-$w")
 
   val GOOGLE_CREDENTIALS = GoogleCredentials.fromStream(new FileInputStream("fir-91406-48f16c08907e.json"))
@@ -91,8 +91,7 @@ package object pubsub {
 
   val GOOGLE_CREDENTIALS_PROVIDER = FixedCredentialsProvider.create(GOOGLE_CREDENTIALS)
 
-  def computeSubscriptionTopic(topic: String): String = {
-    val id = Hashing.murmur3_128().hashBytes(topic.getBytes()).asInt() % Config.NUM_SUBSCRIBERS
-    SUBSCRIBERS(id)
+  def computeSubscriptionTopic(topic: String): Int = {
+    Hashing.murmur3_128().hashBytes(topic.getBytes()).asInt() % Config.NUM_SUBSCRIBERS
   }
 }

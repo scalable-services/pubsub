@@ -42,7 +42,7 @@ object Main {
           Greeter(entityContext.entityId, entityContext))
       )*/
 
-      new GreeterServer(context.system, sharding).run(port + 1000)
+      //new GreeterServer(context.system, sharding).run(port + 1000)
 
       val daemon =  ShardedDaemonProcess(context.system)
 
@@ -57,7 +57,7 @@ object Main {
 
     val ports =
       if (args.isEmpty)
-        Seq(2551, 2552)
+        Seq(2551, 2552, 2553)
       else
         args.toSeq.map(_.toInt)
 

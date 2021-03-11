@@ -1,6 +1,6 @@
 package services.scalable.pubsub
 
-import akka.actor.typed.Behavior
+import akka.actor.typed.{Behavior, PostStop, PreRestart}
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.Behaviors
 import akka.cluster.pubsub.{DistributedPubSub, DistributedPubSubMediator}
@@ -12,7 +12,7 @@ import services.scalable.pubsub.grpc._
 
 import java.util.TimerTask
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.Future
+import scala.concurrent.{Future, Promise}
 import scala.util.{Failure, Success}
 
 object SubscriptionHandler {
@@ -26,8 +26,9 @@ object SubscriptionHandler {
     val logger = ctx.log
     implicit val ec = ctx.executionContext
 
-    ctx.log.info(s"${Console.YELLOW_B}Starting subscription handler ${name}${Console.RESET}\n")
+    ctx.log.info(s"${Console.YELLOW_B}Starting  ${name}${Console.RESET}\n")
     ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)
+
     // activate the extension
     val mediator = DistributedPubSub(ctx.system).mediator
 
@@ -43,7 +44,7 @@ object SubscriptionHandler {
 
         logger.info(s"\ninserting into ${topic}: ${subs.map{s => s.subscriber -> s.brokerId}}\n")
 
-        index.insert(subs.map{s => s.subscriber.getBytes() -> s.brokerId.getBytes()}, upsert = true)
+        index.insert(subs.map{s => s.subscriber.getBytes() -> s.brokerId.getBytes()}, upsert = false)
           .flatMap { result =>
 
             logger.info(s"${Console.BLUE_B}INSERTED: ${result}${Console.RESET}")
@@ -53,7 +54,7 @@ object SubscriptionHandler {
       }
 
       if(!indexes.isDefinedAt(indexId)) {
-        return storage.loadOrCreate(indexId, Config.NUM_LEAF_ENTRIES, Config.NUM_META_ENTRIES).flatMap{ ctx =>
+        return storage.loadOrCreate(indexId, Config.NUM_LEAF_ENTRIES, Config.NUM_META_ENTRIES).flatMap { ctx =>
 
           val index = new Index[String, Bytes, Bytes]()(ec, ctx)
           indexes.put(indexId, index -> ctx)
@@ -67,7 +68,7 @@ object SubscriptionHandler {
       addSubscribers(index, ctx)
     }
 
-    val subscriptionId = s"subscriptions-sub"
+    val subscriptionId = s"subscriptions-${id}-sub"
     val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
 
     val queue = TrieMap.empty[String, (Subscribe, AckReplyConsumer)]
@@ -107,27 +108,27 @@ object SubscriptionHandler {
             }
           }
         }
-        
-        Future.sequence(distinct.map { case (topic, subs) =>
-          addSubscribers(topic, subs.map(_._2).toSeq)
-        }).onComplete {
+
+        println(s"\n${Console.MAGENTA_B}$name received subscriptions ${commands.map(_.subscriber)}${Console.RESET}\n")
+
+        Future.sequence(distinct.map{case (topic, list) => addSubscribers(topic, list.map(_._2).toSeq)}).onComplete {
           case Success(roots) =>
 
             commands.foreach { s =>
               queue.remove(s.id).get._2.ack()
             }
 
-            if(!roots.isEmpty){
+            /*if(!roots.isEmpty){
               val evt = Worker.IndexChanged(distinct.map{case (topic, _) =>
                 val topic_name = s"${topic}_subscribers"
 
                 topic_name -> indexes(topic_name)._2.root})
               mediator ! DistributedPubSubMediator.Publish(Topics.EVENTS, evt)
-            }
+            }*/
 
             timer.schedule(new CommandTask(), 10L)
 
-          case Failure(ex) => ex.printStackTrace()
+          case Failure(ex) => logger.error(ex.getMessage)
         }
       }
     }
@@ -139,15 +140,9 @@ object SubscriptionHandler {
 
         val s = Any.parseFrom(message.getData.toByteArray).unpack(Subscribe)
 
-        println(s"${Console.MAGENTA_B}commander received message ${s}${Console.RESET}\n")
+        println(s"\n${Console.MAGENTA_B}$name received message ${s.subscriber}${Console.RESET}\n")
 
-        /*addSubscribers(s.topic, Seq(s)).onComplete {
-          case Success(ok) => consumer.ack()
-          case Failure(ex) => ex.printStackTrace()
-        }*/
-
-        queue += s.id -> (s, consumer)
-        // consumer.ack()
+        queue.put(s.id, s -> consumer)
       }
     }
 
@@ -157,27 +152,46 @@ object SubscriptionHandler {
       .setFlowControlSettings(flowControlSettings)
       .build()
 
+    /*if(subscriber.isRunning){
+      subscriber.stopAsync().awaitTerminated()
+    }*/
+
     subscriber.startAsync().awaitRunning()
 
-    Behaviors.receiveMessage {
+    Behaviors.receiveMessage[Command] {
       case Stop =>
 
-        ctx.log.info(s"${Console.RED_B}subscription handler $name is stopping${Console.RESET}\n")
+        /*ctx.log.info(s"${Console.RED_B}subscription handler $name is stopping${Console.RESET}\n")
 
-        //subscriber.awaitTerminated()
+        val pr = Promise[Boolean]()
 
         ec.execute(() => {
           timer.cancel()
-          subscriber.awaitTerminated()
-        })
-
-        /*for {
-
-        } yield {}*/
+          subscriber.stopAsync().awaitTerminated()
+          pr.success(true)
+        })*/
 
         Behaviors.stopped
 
       case _ => Behaviors.empty
+    }.receiveSignal {
+      case (context, PostStop) =>
+
+        ctx.log.info(s"${Console.RED_B}subscription handler $name is stopping${Console.RESET}\n")
+
+        val pr = Promise[Boolean]()
+
+        ec.execute(() => {
+          timer.cancel()
+          subscriber.stopAsync().awaitTerminated()
+          pr.success(true)
+        })
+
+        Behaviors.same
+
+      case (context, PreRestart) =>
+
+        Behaviors.same
     }
   }
 
