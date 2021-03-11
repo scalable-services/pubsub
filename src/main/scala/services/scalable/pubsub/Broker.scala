@@ -47,7 +47,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
   for(i<-0 until Config.NUM_SUBSCRIBERS){
     val publisher = Publisher
-      .newBuilder(TopicName.of(Config.projectId, s"subscriptions-$i"))
+      .newBuilder(TopicName.of(Config.projectId, s"sub-$i"))
       .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
       .setBatchingSettings(psettings)
       .build()

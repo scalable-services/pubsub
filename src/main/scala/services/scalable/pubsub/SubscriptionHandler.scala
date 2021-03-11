@@ -35,7 +35,7 @@ object SubscriptionHandler {
 
     val indexes = TrieMap.empty[String, (Index[String, Bytes, Bytes], Context[String, Bytes, Bytes])]
 
-    val eventsPublisher = Publisher.newBuilder(TopicName.of(Config.projectId, "subscription-events"))
+    val eventsPublisher = Publisher.newBuilder(TopicName.of(Config.projectId, "sub-events"))
       .setBatchingSettings(psettings)
       .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
       .setEnableMessageOrdering(true)
@@ -75,7 +75,7 @@ object SubscriptionHandler {
       addSubscribers(index, ctx)
     }
 
-    val subscriptionId = s"subscriptions-${id}-sub"
+    val subscriptionId = s"sub-${id}-sub"
     val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
 
     val queue = TrieMap.empty[String, (Subscribe, AckReplyConsumer)]

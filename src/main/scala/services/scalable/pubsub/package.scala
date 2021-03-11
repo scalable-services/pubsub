@@ -70,7 +70,7 @@ package object pubsub {
 
     val KEYSPACE = "pubsub"
 
-    val projectId = "fir-91406"
+    val projectId = "scalable-services"
     val projectRegion = "us-central1"
 
     val KAFKA_HOST = "localhost:9092"

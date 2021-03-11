@@ -42,7 +42,7 @@ object Worker {
     ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)
 
     val tasksSubscriptionName = ProjectSubscriptionName.of(Config.projectId, s"tasks-sub")
-    val subscriptionsEventsName = ProjectSubscriptionName.of(Config.projectId, s"subscription-events-sub-${id}")
+    val subscriptionsEventsName = ProjectSubscriptionName.of(Config.projectId, s"sub-events-worker-${id}")
 
     val brokerPublishers = TrieMap.empty[String, Publisher]
     val indexes = TrieMap.empty[String, Index[String, Bytes, Bytes]]
