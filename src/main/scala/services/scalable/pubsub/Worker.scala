@@ -26,9 +26,9 @@ object Worker {
   sealed trait Event extends WorkerMessage
 
   final case object Stop extends Command
-  final case class IndexChanged(indexes: Map[String, Option[String]]) extends Event
+  //final case class IndexChanged(indexes: Map[String, Option[String]]) extends Event
 
-  def apply(name: String)(implicit cache: Cache[String, Bytes, Bytes],
+  def apply(name: String, id: Int)(implicit cache: Cache[String, Bytes, Bytes],
                           storage: Storage[String, Bytes, Bytes]): Behavior[WorkerMessage] = Behaviors.setup { ctx =>
 
     val logger = ctx.log
@@ -41,8 +41,8 @@ object Worker {
     ctx.log.info(s"${Console.YELLOW_B}Starting worker ${name}${Console.RESET}\n")
     ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)
 
-    val subscriptionId = s"tasks-sub"
-    val tasksSubscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
+    val tasksSubscriptionName = ProjectSubscriptionName.of(Config.projectId, s"tasks-sub")
+    val subscriptionsEventsName = ProjectSubscriptionName.of(Config.projectId, s"subscription-events-sub-${id}")
 
     val brokerPublishers = TrieMap.empty[String, Publisher]
     val indexes = TrieMap.empty[String, Index[String, Bytes, Bytes]]
@@ -90,9 +90,8 @@ object Worker {
         }
       }
 
-      /*if(!indexes.isDefinedAt(indexId)){
-        return storage.load(indexId, Config.NUM_LEAF_ENTRIES, Config.NUM_META_ENTRIES)
-          .flatMap { ctx =>
+      if(!indexes.isDefinedAt(indexId)){
+        return storage.load(indexId).flatMap { ctx =>
 
           val index = new Index[String, Bytes, Bytes]()(ec, ctx)
           indexes.put(indexId, index)
@@ -101,20 +100,9 @@ object Worker {
         }.recover {
           case _ => Seq.empty[(String, String)] -> None
         }
-      }*/
-
-      //getSubscriptions(indexes(indexId))
-
-      storage.load(indexId)
-        .flatMap { ctx =>
-
-          val index = new Index[String, Bytes, Bytes]()(ec, ctx)
-          indexes.put(indexId, index)
-
-          getSubscriptions(index)
-        }.recover {
-        case _ => Seq.empty[(String, String)] -> None
       }
+
+      getSubscriptions(indexes(indexId))
     }
 
     val queue = TrieMap.empty[String, (Task, AckReplyConsumer)]
@@ -222,27 +210,41 @@ object Worker {
       .setFlowControlSettings(flowControlSettings)
       .build()
 
-    tasksSubscriber.startAsync.awaitRunning()
+    tasksSubscriber.startAsync()//.awaitRunning()
 
-    Behaviors.receiveMessage[WorkerMessage] {
-      case IndexChanged(roots) =>
+    val eventsReceiver = new MessageReceiver {
+      override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
 
-        logger.info(s"\n${Console.CYAN_B}${name} RECEIVED PUBSUB MESSAGE: ${roots}${Console.RESET}\n")
+        val evt = Any.parseFrom(message.getData.toByteArray).unpack(IndexChanged)
 
-        roots.foreach { case (idx, root) =>
+        println(s"\n${Console.CYAN_B}worker $name received event ${evt}${Console.RESET}\n")
+
+        evt.roots.foreach { case (idx, r) =>
+          val root = if(r == null) None else Some(r)
+
           if(indexes.isDefinedAt(idx)){
             val i = indexes(idx).ctx
 
-            val ctx = new DefaultContext(i.indexId, root, i.NUM_LEAF_ENTRIES,
-              i.NUM_META_ENTRIES)
+            val ctx = new DefaultContext(i.indexId, root, i.NUM_LEAF_ENTRIES, i.NUM_META_ENTRIES)
             val index = new Index[String, Bytes, Bytes]()(ec, ctx)
 
             indexes.put(idx, index)
           }
         }
 
-        Behaviors.same
+        consumer.ack()
+      }
+    }
 
+    val subscriptionEventsSubscriber = Subscriber
+      .newBuilder(subscriptionsEventsName, eventsReceiver)
+      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
+      .setFlowControlSettings(flowControlSettings)
+      .build()
+
+    subscriptionEventsSubscriber.startAsync()//.awaitRunning()
+
+    Behaviors.receiveMessage[WorkerMessage] {
       case Stop =>
 
         /*ctx.log.info(s"${Console.RED_B}WORKER IS STOPPING: ${name}${Console.RESET}\n")
@@ -263,6 +265,7 @@ object Worker {
 
         ec.execute(() => {
           timer.cancel()
+          subscriptionEventsSubscriber.stopAsync().awaitTerminated()
           taskPublisher.shutdown()
           brokerPublishers.foreach(_._2.shutdown())
           tasksSubscriber.stopAsync().awaitTerminated()

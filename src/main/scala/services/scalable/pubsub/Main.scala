@@ -47,7 +47,7 @@ object Main {
       val daemon =  ShardedDaemonProcess(context.system)
 
       daemon.init("subscribers", SUBSCRIBERS.length, id => SubscriptionHandler(SUBSCRIBERS(id), id), SubscriptionHandler.Stop)
-      daemon.init("workers", WORKERS.length, id => Worker(WORKERS(id)), Worker.Stop)
+      daemon.init("workers", WORKERS.length, id => Worker(WORKERS(id), id), Worker.Stop)
 
       Behaviors.empty
     }

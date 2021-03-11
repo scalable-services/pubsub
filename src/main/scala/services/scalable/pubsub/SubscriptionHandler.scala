@@ -5,12 +5,13 @@ import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.Behaviors
 import akka.cluster.pubsub.{DistributedPubSub, DistributedPubSubMediator}
 import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber}
+import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
 import com.google.pubsub.v1.{ProjectSubscriptionName, PubsubMessage, TopicName}
 import services.scalable.index._
 import services.scalable.pubsub.grpc._
 
-import java.util.TimerTask
+import java.util.{TimerTask, UUID}
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.{Future, Promise}
 import scala.util.{Failure, Success}
@@ -33,6 +34,12 @@ object SubscriptionHandler {
     val mediator = DistributedPubSub(ctx.system).mediator
 
     val indexes = TrieMap.empty[String, (Index[String, Bytes, Bytes], Context[String, Bytes, Bytes])]
+
+    val eventsPublisher = Publisher.newBuilder(TopicName.of(Config.projectId, "subscription-events"))
+      .setBatchingSettings(psettings)
+      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
+      .setEnableMessageOrdering(true)
+      .build()
 
     def addSubscribers(topic: String, subs: Seq[Subscribe]): Future[Boolean] = {
 
@@ -75,10 +82,15 @@ object SubscriptionHandler {
 
     val timer = new java.util.Timer()
 
-    /*val eventsPublisher = Publisher.newBuilder(TopicName.of(Config.projectId, Topics.EVENTS))
-      .setBatchingSettings(psettings)
-      .setEnableMessageOrdering(true)
-      .build()*/
+    def publishEvent(changed: IndexChanged): Future[Boolean] = {
+      val pr = Promise[Boolean]()
+      val pm = PubsubMessage.newBuilder().setData(ByteString.copyFrom(Any.pack(changed).toByteArray))
+        .build()
+
+      eventsPublisher.publish(pm).addListener(() => pr.success(true), ec)
+
+      pr.future
+    }
 
     class CommandTask extends TimerTask {
       override def run(): Unit = {
@@ -118,15 +130,22 @@ object SubscriptionHandler {
               queue.remove(s.id).get._2.ack()
             }
 
-            /*if(!roots.isEmpty){
-              val evt = Worker.IndexChanged(distinct.map{case (topic, _) =>
+            if(!roots.isEmpty){
+              val evt = IndexChanged(UUID.randomUUID.toString, distinct.map{case (topic, _) =>
                 val topic_name = s"${topic}_subscribers"
+                val root = indexes(topic_name)._2.root
 
-                topic_name -> indexes(topic_name)._2.root})
-              mediator ! DistributedPubSubMediator.Publish(Topics.EVENTS, evt)
-            }*/
+                topic_name -> (if(root.isDefined) root.get else null)
+              })
 
-            timer.schedule(new CommandTask(), 10L)
+              publishEvent(evt).onComplete {
+                case Success(ok) => timer.schedule(new CommandTask(), 10L)
+                case Failure(ex) => logger.error(ex.getMessage)
+              }
+
+            } else {
+              timer.schedule(new CommandTask(), 10L)
+            }
 
           case Failure(ex) => logger.error(ex.getMessage)
         }
@@ -156,7 +175,7 @@ object SubscriptionHandler {
       subscriber.stopAsync().awaitTerminated()
     }*/
 
-    subscriber.startAsync().awaitRunning()
+    subscriber.startAsync()//.awaitRunning()
 
     Behaviors.receiveMessage[Command] {
       case Stop =>
@@ -183,6 +202,7 @@ object SubscriptionHandler {
 
         ec.execute(() => {
           timer.cancel()
+          eventsPublisher.shutdown()
           subscriber.stopAsync().awaitTerminated()
           pr.success(true)
         })

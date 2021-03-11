@@ -89,7 +89,9 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
   subscriber.startAsync.awaitRunning()
 
-  def insertSubscription(topics: Seq[String], client: String): Future[Boolean] = {
+  def publishSubscription(topics: Seq[String], client: String): Future[Boolean] = {
+    if(topics.isEmpty) return Future.successful(true)
+
     Future.sequence(topics.map{t => t -> computeSubscriptionTopic(t)}.groupBy(_._2).map { case (pid, topics) =>
 
       val cmd = Subscribe(UUID.randomUUID.toString, topics.map(_._1), id, client)
@@ -114,6 +116,17 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
   val server = MqttServer.create(vertx, options)
   val endpoints = TrieMap.empty[String, MqttEndpoint]
   val subscriptions = TrieMap.empty[String, TrieMap[MqttEndpoint, MqttTopicSubscription]]
+
+  def publishTask(task: Task): Future[Boolean] = {
+    val data = ByteString.copyFrom(Any.pack(task).toByteArray)
+
+    val pm = PubsubMessage.newBuilder().setData(data).build()
+    val pr = Promise[Boolean]()
+
+    taskPublisher.publish(pm).addListener(() => pr.success(true), ec.asInstanceOf[Executor])
+
+    pr.future
+  }
 
   def endpointHandler(endpoint: MqttEndpoint): Unit = {
 
@@ -153,11 +166,12 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
       topics = topics.distinct
 
-      if(!topics.isEmpty){
-        insertSubscription(topics, client).onComplete {
-          case Success(ok) => println(s"subscriptions ${topics} for $client inserted!!!\n")
-          case Failure(ex) => ex.printStackTrace()
-        }
+      publishSubscription(topics, client).onComplete {
+        case Success(ok) =>
+          println(s"subscriptions ${topics} for $client inserted!!!\n")
+          endpoint.subscribeAcknowledge(sub.messageId(), sub.topicSubscriptions().map{ts => ts.qualityOfService()})
+
+        case Failure(ex) => ex.printStackTrace()
       }
     })
 
@@ -184,14 +198,8 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
         ByteString.copyFrom(message.payload().getBytes))
 
       val t = Task(UUID.randomUUID.toString, Some(m))
-      val data = ByteString.copyFrom(Any.pack(t).toByteArray)
 
-      val pm = PubsubMessage.newBuilder().setData(data).build()
-      val pr = Promise[String]()
-
-      ec.execute(() => pr.success(taskPublisher.publish(pm).get()))
-
-      pr.future.onComplete {
+      publishTask(t).onComplete {
         case Success(mid) =>
 
           println(s"${Console.GREEN_B}successfully published message with id ${mid}${Console.RESET}\n")
