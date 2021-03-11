@@ -51,7 +51,7 @@ object SubscriptionHandler {
 
         logger.info(s"\ninserting into ${topic}: ${subs.map{s => s.subscriber -> s.externalTopic}}\n")
 
-        index.insert(subs.map{s => s.subscriber.getBytes() -> s.externalTopic.getBytes()}, upsert = false)
+        index.insert(subs.map{s => s.subscriber.getBytes() -> s.externalTopic.getBytes()}, upsert = true)
           .flatMap { result =>
 
             logger.info(s"${Console.BLUE_B}INSERTED: ${result}${Console.RESET}")
