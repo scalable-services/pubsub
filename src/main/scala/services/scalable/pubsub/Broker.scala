@@ -94,7 +94,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
     Future.sequence(topics.map{t => t -> computeSubscriptionTopic(t)}.groupBy(_._2).map { case (pid, topics) =>
 
-      val cmd = Subscribe(UUID.randomUUID.toString, topics.map(_._1), id, client)
+      val cmd = Subscribe(UUID.randomUUID.toString, topics.map(_._1), brokerId, client)
       val data = ByteString.copyFrom(Any.pack(cmd).toByteArray)
 
       val pm = PubsubMessage.newBuilder().setData(data).build()

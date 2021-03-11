@@ -18,7 +18,7 @@ message HelloResponse {
 message Subscribe {
   string id = 1;
   repeated string topics = 2;
-  string brokerId = 3;
+  string externalTopic = 3;
   string subscriber = 4;
 }
 

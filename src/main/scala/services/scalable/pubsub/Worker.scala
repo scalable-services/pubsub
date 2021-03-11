@@ -47,7 +47,7 @@ object Worker {
     val brokerPublishers = TrieMap.empty[String, Publisher]
     val indexes = TrieMap.empty[String, Index[String, Bytes, Bytes]]
 
-    for(i<-0 until Broker.Config.NUM_BROKERS){
+    /*for(i<-0 until Broker.Config.NUM_BROKERS){
       val publisher = Publisher
         .newBuilder(TopicName.of(Config.projectId, s"broker-$i"))
         .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
@@ -55,7 +55,7 @@ object Worker {
         .build()
 
       brokerPublishers += i.toString -> publisher
-    }
+    }*/
 
     val taskPublisher = Publisher
       .newBuilder(TopicName.of(Config.projectId, Topics.TASKS))
@@ -77,6 +77,24 @@ object Worker {
 
         pr.future
       }).map(_ => true)
+    }
+
+    def createOrGetPublisher(topic: String): Publisher = {
+      brokerPublishers.get(topic) match {
+        case None =>
+
+          val publisher = Publisher
+            .newBuilder(TopicName.of(Config.projectId, topic))
+            .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
+            .setBatchingSettings(psettings)
+            .build()
+
+          brokerPublishers += topic -> publisher
+
+          publisher
+
+        case Some(p) => p
+      }
     }
 
     def getSubscriptions(topic: String, last: String = ""): Future[(Seq[(String, String)], Option[String])] = {
@@ -136,7 +154,7 @@ object Worker {
         val buf = Any.pack(batch).toByteArray
 
         val pr = Promise[Boolean]()
-        val broker = brokerPublishers(batch.topic)
+        val broker = createOrGetPublisher(batch.topic)
 
         broker.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build())
           .addListener(() => pr.success(true), ec)
