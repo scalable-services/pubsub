@@ -86,6 +86,8 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
             }
           }
 
+          posts.foreach{case (p, _) => deleteFromStorage(p.id)}
+
         case Failure(ex) => logger.info(ex.getMessage())
       }
 
@@ -160,6 +162,12 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
     vertx.executeBlocking { () =>
       val blobId = BlobId.of(Config.bucketId, id)
       gcs.get(blobId).getContent()
+    }
+  }
+
+  def deleteFromStorage(id: String): Future[Boolean] = {
+    vertx.executeBlocking { () =>
+      gcs.delete(BlobId.of(Config.bucketId, id))
     }
   }
 
