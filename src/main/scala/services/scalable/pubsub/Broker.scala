@@ -3,6 +3,7 @@ package services.scalable.pubsub
 import com.datastax.oss.driver.api.core.CqlSession
 import com.google.api.gax.core.FixedCredentialsProvider
 import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber}
+import com.google.cloud.storage.{BlobId, BlobInfo, StorageOptions}
 import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
 import com.google.pubsub.v1.{ProjectSubscriptionName, PubsubMessage, TopicName}
@@ -58,6 +59,9 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
     subPublishers += i.toString -> publisher
   }
 
+  val gcs = StorageOptions.newBuilder().setProjectId(Config.projectId)
+    .setCredentials(GOOGLE_CREDENTIALS).build().getService()
+
   val receiver = new MessageReceiver {
     override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
 
@@ -65,20 +69,24 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
       val batch = Any.parseFrom(message.getData.toByteArray).unpack(PostBatch)
 
-      batch.posts.foreach { post =>
-        post.subscribers.foreach { s =>
+      Future.sequence(batch.posts.map{p => readFromStorage(p.id).map(p -> _)}).onComplete {
+        case Success(posts) =>
 
-          endpoints.get(s) match {
-            case Some(e) =>
+          posts.foreach { case (post, data) =>
+            post.subscribers.foreach { s =>
 
-              val msg = post.message.get
+              endpoints.get(s) match {
+                case Some(e) =>
 
-              e.publish(msg.topic, io.vertx.core.buffer.Buffer.buffer(msg.data.toByteArray),
-                MqttQoS.AT_LEAST_ONCE, false, false)
+                  e.publish(post.topic, io.vertx.core.buffer.Buffer.buffer(data), MqttQoS.valueOf(post.qos),
+                    false, false)
 
-            case None =>
+                case None =>
+              }
+            }
           }
-        }
+
+        case Failure(ex) => logger.info(ex.getMessage())
       }
 
       consumer.ack()
@@ -133,6 +141,26 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
   def getRoot(topic: String): Future[Option[String]] = {
     storage.load(s"${topic}_subscribers").map(_.root).recover{case _ => None}
+  }
+
+  def writeToStorage(id: String, value: Array[Byte]): Future[Boolean] = {
+    vertx.executeBlocking { () =>
+      val blobId = BlobId.of(Config.bucketId, id)
+      val blobInfo = BlobInfo.newBuilder(blobId).build()
+
+      val info = gcs.create(blobInfo, value)
+      logger.info(s"created bucket ${info}")
+    }.map(_ => true).recover{case _ => false}
+  }
+
+  def readFromStorage(id: String): Future[Array[Byte]] = {
+
+    logger.info(s"\ntrying to read ${id}...\n")
+
+    vertx.executeBlocking { () =>
+      val blobId = BlobId.of(Config.bucketId, id)
+      gcs.get(blobId).getContent()
+    }
   }
 
   def endpointHandler(endpoint: MqttEndpoint): Unit = {
@@ -201,17 +229,17 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
       logger.info(s"\n\n${Console.GREEN_B}$brokerId received [${message.payload().toString(Charset.defaultCharset())}] with QoS [${message.qosLevel()}]${Console.RESET}\n\n")
 
-      val m = Message(UUID.randomUUID.toString, message.topicName(),
-        ByteString.copyFrom(message.payload().getBytes))
+      val mid = UUID.randomUUID.toString
+      val data = message.payload().getBytes()
 
-      getRoot(m.topic).flatMap {
+      writeToStorage(mid, data).flatMap{ ok => getRoot(message.topicName())}.flatMap {
         case None => Future.successful(true)
-        case Some(root) =>
-          publishTask(Task(UUID.randomUUID.toString, Some(m), root))
+        case Some(root) => publishTask(Task(mid, message.topicName(), message.qosLevel().value(),
+          root))
       }.onComplete {
-        case Success(mid) =>
+        case Success(ok) =>
 
-          println(s"${Console.GREEN_B}successfully published message with id ${mid}${Console.RESET}\n")
+          println(s"${Console.GREEN_B}successfully published message with id ${ok}${Console.RESET}\n")
 
           if (message.qosLevel() == MqttQoS.AT_LEAST_ONCE) {
             endpoint.publishAcknowledge(message.messageId())

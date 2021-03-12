@@ -74,6 +74,7 @@ package object pubsub {
     val KEYSPACE = "pubsub"
 
     val projectId = "scalable-services"
+    val bucketId = "scalable-services-pubsub-messages"
     val projectName = ProjectName.of(projectId)
     val projectRegion = "us-central1"
 

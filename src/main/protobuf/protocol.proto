@@ -25,29 +25,31 @@ message Subscribe {
 message Message {
   string id = 1;
   string topic = 2;
-  bytes data = 3;
+  //bytes data = 3;
 
-  int32 qos = 4;
+  int32 qos = 3;
 }
 
 message Post {
   string id = 1;
-  Message message = 2;
-  repeated string subscribers = 3;
+  string topic = 2;
+  int32 qos = 3;
+  repeated string subscribers = 4;
 }
 
 message PostBatch {
   string id = 1;
-  string topic = 2;
+  string externalTopic = 2;
   repeated Post posts = 3;
 }
 
 message Task {
   string id = 1;
-  Message message = 2;
+  string topic = 2;
+  int32 qos = 3;
   // For consistency throughout the next batches processing...
-  string root = 3;
+  string root = 4;
 
-  string lastBlock = 4;
+  string lastBlock = 5;
 }
 

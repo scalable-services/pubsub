@@ -146,14 +146,14 @@ object Worker {
         PostBatch(UUID.randomUUID.toString, broker, list.map{ case (t, clients) =>
           logger.info(s"\n\n${Console.BLUE_B}subscribers: ${clients}\n\n${Console.RESET}")
 
-          Post(UUID.randomUUID.toString, t.message, clients)
+          Post(t.id, t.topic, t.qos, clients)
         })
       }.map { batch =>
 
         val buf = Any.pack(batch).toByteArray
 
         val pr = Promise[Boolean]()
-        val broker = createOrGetPublisher(batch.topic)
+        val broker = createOrGetPublisher(batch.externalTopic)
 
         broker.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build())
           .addListener(() => pr.success(true), ec)
@@ -172,7 +172,7 @@ object Worker {
           return
         }
 
-        Future.sequence(tasks.map { t => getSubscriptions(t.message.get.topic, t.root, t.lastBlock).map {t -> _}
+        Future.sequence(tasks.map { t => getSubscriptions(t.topic, t.root, t.lastBlock).map {t -> _}
         }).flatMap { subs =>
 
           val list = subs.filterNot(_._2._1.isEmpty)
@@ -188,7 +188,7 @@ object Worker {
           }
 
           Future.sequence(Seq(post(brokers), publishTasks(lasts.map { case (t, last) =>
-            Task(UUID.randomUUID.toString, t.message, t.root, last)
+            Task(t.id, t.topic, t.qos, t.root, last)
           })))
 
         }.onComplete {
