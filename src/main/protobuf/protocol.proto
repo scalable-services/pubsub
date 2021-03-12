@@ -26,6 +26,8 @@ message Message {
   string id = 1;
   string topic = 2;
   bytes data = 3;
+
+  int32 qos = 4;
 }
 
 message Post {
@@ -43,12 +45,9 @@ message PostBatch {
 message Task {
   string id = 1;
   Message message = 2;
-  string lastBlock = 3;
-  int64 start_tmp = 4;
-}
+  // For consistency throughout the next batches processing...
+  string root = 3;
 
-message IndexChanged {
-  string id = 1;
-  map<string, string> roots = 2;
+  string lastBlock = 4;
 }
 

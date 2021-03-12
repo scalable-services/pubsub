@@ -6,6 +6,7 @@ import com.google.api.gax.core.FixedCredentialsProvider
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.collect.Lists
 import com.google.common.hash.Hashing
+import com.google.pubsub.v1.{ProjectName, TopicName}
 import io.vertx.scala.core.VertxOptions
 
 import java.io.FileInputStream
@@ -62,6 +63,8 @@ package object pubsub {
   type TPartition = io.vertx.kafka.client.common.TopicPartition
 
   object Config {
+    val admin = true
+
     val NUM_LEAF_ENTRIES = 10
     val NUM_META_ENTRIES = 10
 
@@ -71,16 +74,56 @@ package object pubsub {
     val KEYSPACE = "pubsub"
 
     val projectId = "scalable-services"
+    val projectName = ProjectName.of(projectId)
     val projectRegion = "us-central1"
 
     val KAFKA_HOST = "localhost:9092"
     val ZOOKEEPER_HOST = "localhost:2181"
+
+    // All topics...
+    var topics = Map(
+      "tasks" -> TopicName.of(projectId, "tasks"),
+      "events" -> TopicName.of(projectId, "events")
+    )
+
+    for(i<-0 until Broker.Config.NUM_BROKERS){
+      val name = s"broker-$i"
+      topics = topics + (name -> TopicName.of(projectId, name))
+    }
+
+    for(i<-0 until Config.NUM_SUBSCRIBERS){
+      val name = s"subscriber-$i"
+      topics = topics + (name -> TopicName.of(projectId, name))
+    }
+
+    // All needed subscriptions
+    var subscriptions = Map(
+      //Shared
+      "tasks-sub" -> TopicName.of(projectId, "tasks")
+    )
+
+    // Exclusive
+    for(i<-0 until Broker.Config.NUM_BROKERS){
+      val name = s"broker-${i}-sub"
+      subscriptions = subscriptions + (name -> TopicName.of(projectId, s"broker-${i}"))
+    }
+
+    // Exclusive
+    for(i<-0 until Config.NUM_WORKERS){
+      val name = s"events-sub-$i"
+      subscriptions = subscriptions + (name -> TopicName.of(projectId, "events"))
+    }
+
+    //Exclusive
+    for(i<-0 until Config.NUM_WORKERS){
+      val name = s"subscriber-${i}-sub"
+      subscriptions = subscriptions + (name -> TopicName.of(projectId, s"subscriber-${i}"))
+    }
+
   }
 
   object Topics {
-    val TASKS = "tasks"
-    val SUBSCRIPTIONS = "subscriptions"
-    val EVENTS = "worker-events"
+    val EVENTS = s"events"
   }
 
   val SUBSCRIBERS = (0 until Config.NUM_SUBSCRIBERS).map(s => s"subscription-$s")

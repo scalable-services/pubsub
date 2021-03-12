@@ -42,7 +42,6 @@ object Worker {
     ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)
 
     val tasksSubscriptionName = ProjectSubscriptionName.of(Config.projectId, s"tasks-sub")
-    val subscriptionsEventsName = ProjectSubscriptionName.of(Config.projectId, s"sub-events-worker-${id}")
 
     val brokerPublishers = TrieMap.empty[String, Publisher]
     val indexes = TrieMap.empty[String, Index[String, Bytes, Bytes]]
@@ -58,7 +57,7 @@ object Worker {
     }*/
 
     val taskPublisher = Publisher
-      .newBuilder(TopicName.of(Config.projectId, Topics.TASKS))
+      .newBuilder(TopicName.of(Config.projectId, s"tasks"))
       .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
       .setBatchingSettings(psettings)
       .build()
@@ -97,7 +96,7 @@ object Worker {
       }
     }
 
-    def getSubscriptions(topic: String, last: String = ""): Future[(Seq[(String, String)], Option[String])] = {
+    def getSubscriptions(topic: String, root: String, last: String = ""): Future[(Seq[(String, String)], Option[String])] = {
       val indexId = s"${topic}_subscribers"
 
       def getSubscriptions(index: Index[String, Bytes, Bytes]): Future[(Seq[(String, String)], Option[String])] = {
@@ -108,11 +107,11 @@ object Worker {
         }
       }
 
-      if(!indexes.isDefinedAt(indexId)){
+      if(!indexes.isDefinedAt(root)){
         return storage.load(indexId).flatMap { ctx =>
 
           val index = new Index[String, Bytes, Bytes]()(ec, ctx)
-          indexes.put(indexId, index)
+          indexes.put(root, index)
 
           getSubscriptions(index)
         }.recover {
@@ -120,34 +119,34 @@ object Worker {
         }
       }
 
-      getSubscriptions(indexes(indexId))
+      getSubscriptions(indexes(root))
     }
 
     val queue = TrieMap.empty[String, (Task, AckReplyConsumer)]
     val timer = new java.util.Timer()
 
-    def post(msgs: Seq[(Message, Seq[(String, String)])]): Future[Boolean] = {
+    def post(msgs: Seq[(Task, Seq[(String, String)])]): Future[Boolean] = {
       if(msgs.isEmpty) return Future.successful(true)
 
-      val delivery = TrieMap.empty[String, Seq[(Message, Seq[String])]]
+      val delivery = TrieMap.empty[String, Seq[(Task, Seq[String])]]
 
-      msgs.foreach { case (m, subscribers) =>
+      msgs.foreach { case (t, subscribers) =>
         subscribers.groupBy(_._2).foreach { case (broker, clients_topics) =>
           delivery.get(broker) match {
             case None =>
 
-              delivery.put(broker, Seq(m -> clients_topics.map(_._1)))
+              delivery.put(broker, Seq(t -> clients_topics.map(_._1)))
 
-            case Some(list) => delivery.put(broker, list :+ (m -> clients_topics.map(_._1)))
+            case Some(list) => delivery.put(broker, list :+ (t -> clients_topics.map(_._1)))
           }
         }
       }
 
       Future.sequence(delivery.map { case (broker, list) =>
-        PostBatch(UUID.randomUUID.toString, broker, list.map{ case (m, clients) =>
+        PostBatch(UUID.randomUUID.toString, broker, list.map{ case (t, clients) =>
           logger.info(s"\n\n${Console.BLUE_B}subscribers: ${clients}\n\n${Console.RESET}")
 
-          Post(UUID.randomUUID.toString, Some(m), clients)
+          Post(UUID.randomUUID.toString, t.message, clients)
         })
       }.map { batch =>
 
@@ -173,15 +172,12 @@ object Worker {
           return
         }
 
-        Future.sequence(tasks.map { t => getSubscriptions(t.message.get.topic, t.lastBlock)
-            .map {
-              t.message.get -> _
-            }
+        Future.sequence(tasks.map { t => getSubscriptions(t.message.get.topic, t.root, t.lastBlock).map {t -> _}
         }).flatMap { subs =>
 
           val list = subs.filterNot(_._2._1.isEmpty)
 
-          var lasts = Seq.empty[(Message, String)]
+          var lasts = Seq.empty[(Task, String)]
 
           val brokers = list.map { case (m, (subs, last)) =>
             if (last.isDefined) {
@@ -191,8 +187,8 @@ object Worker {
             m -> subs
           }
 
-          Future.sequence(Seq(post(brokers), publishTasks(lasts.map { case (m, last) =>
-            Task(UUID.randomUUID.toString, Some(m), last)
+          Future.sequence(Seq(post(brokers), publishTasks(lasts.map { case (t, last) =>
+            Task(UUID.randomUUID.toString, t.message, t.root, last)
           })))
 
         }.onComplete {
@@ -230,38 +226,6 @@ object Worker {
 
     tasksSubscriber.startAsync()//.awaitRunning()
 
-    val eventsReceiver = new MessageReceiver {
-      override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
-
-        val evt = Any.parseFrom(message.getData.toByteArray).unpack(IndexChanged)
-
-        println(s"\n${Console.CYAN_B}worker $name received event ${evt}${Console.RESET}\n")
-
-        evt.roots.foreach { case (idx, r) =>
-          val root = if(r == null) None else Some(r)
-
-          if(indexes.isDefinedAt(idx)){
-            val i = indexes(idx).ctx
-
-            val ctx = new DefaultContext(i.indexId, root, i.NUM_LEAF_ENTRIES, i.NUM_META_ENTRIES)
-            val index = new Index[String, Bytes, Bytes]()(ec, ctx)
-
-            indexes.put(idx, index)
-          }
-        }
-
-        consumer.ack()
-      }
-    }
-
-    val subscriptionEventsSubscriber = Subscriber
-      .newBuilder(subscriptionsEventsName, eventsReceiver)
-      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-      .setFlowControlSettings(flowControlSettings)
-      .build()
-
-    subscriptionEventsSubscriber.startAsync()//.awaitRunning()
-
     Behaviors.receiveMessage[WorkerMessage] {
       case Stop =>
 
@@ -283,7 +247,6 @@ object Worker {
 
         ec.execute(() => {
           timer.cancel()
-          subscriptionEventsSubscriber.stopAsync().awaitTerminated()
           taskPublisher.shutdown()
           brokerPublishers.foreach(_._2.shutdown())
           tasksSubscriber.stopAsync().awaitTerminated()

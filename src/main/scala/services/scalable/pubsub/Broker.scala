@@ -13,6 +13,7 @@ import io.vertx.scala.kafka.client.producer.KafkaProducerRecord
 import io.vertx.scala.mqtt.messages.MqttUnsubscribeMessage
 import io.vertx.scala.mqtt.{MqttEndpoint, MqttServer, MqttServerOptions, MqttTopicSubscription}
 import org.slf4j.LoggerFactory
+import services.scalable.index._
 import services.scalable.pubsub.grpc._
 
 import java.nio.charset.Charset
@@ -22,10 +23,12 @@ import scala.collection.concurrent.TrieMap
 import scala.concurrent.{ExecutionContext, Future, Promise}
 import scala.util.{Failure, Success}
 
-class Broker(val id: String, val host: String, val port: Int)(implicit val ec: ExecutionContext) {
+class Broker(val id: String, val host: String, val port: Int)(implicit val ec: ExecutionContext,
+                                                              val cache: Cache[String, Bytes, Bytes],
+                                                              val storage: Storage[String, Bytes, Bytes]) {
 
   val logger = LoggerFactory.getLogger(this.getClass)
-    
+
   val brokerId = s"broker-$id"
 
   val session = CqlSession
@@ -38,7 +41,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
   val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
 
   val taskPublisher = Publisher
-    .newBuilder(TopicName.of(Config.projectId, Topics.TASKS))
+    .newBuilder(TopicName.of(Config.projectId, s"tasks"))
     .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
     .setBatchingSettings(psettings)
     .build()
@@ -47,7 +50,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
   for(i<-0 until Config.NUM_SUBSCRIBERS){
     val publisher = Publisher
-      .newBuilder(TopicName.of(Config.projectId, s"sub-$i"))
+      .newBuilder(TopicName.of(Config.projectId, s"subscriber-$i"))
       .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
       .setBatchingSettings(psettings)
       .build()
@@ -128,6 +131,10 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
     pr.future
   }
 
+  def getRoot(topic: String): Future[Option[String]] = {
+    storage.load(s"${topic}_subscribers").map(_.root).recover{case _ => None}
+  }
+
   def endpointHandler(endpoint: MqttEndpoint): Unit = {
 
     val client = endpoint.clientIdentifier()
@@ -197,9 +204,11 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
       val m = Message(UUID.randomUUID.toString, message.topicName(),
         ByteString.copyFrom(message.payload().getBytes))
 
-      val t = Task(UUID.randomUUID.toString, Some(m))
-
-      publishTask(t).onComplete {
+      getRoot(m.topic).flatMap {
+        case None => Future.successful(true)
+        case Some(root) =>
+          publishTask(Task(UUID.randomUUID.toString, Some(m), root))
+      }.onComplete {
         case Success(mid) =>
 
           println(s"${Console.GREEN_B}successfully published message with id ${mid}${Console.RESET}\n")

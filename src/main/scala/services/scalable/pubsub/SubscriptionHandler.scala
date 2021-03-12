@@ -35,12 +35,6 @@ object SubscriptionHandler {
 
     val indexes = TrieMap.empty[String, (Index[String, Bytes, Bytes], Context[String, Bytes, Bytes])]
 
-    val eventsPublisher = Publisher.newBuilder(TopicName.of(Config.projectId, "sub-events"))
-      .setBatchingSettings(psettings)
-      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-      .setEnableMessageOrdering(true)
-      .build()
-
     def addSubscribers(topic: String, subs: Seq[Subscribe]): Future[Boolean] = {
 
       if(subs.isEmpty) return Future.successful(true)
@@ -75,22 +69,12 @@ object SubscriptionHandler {
       addSubscribers(index, ctx)
     }
 
-    val subscriptionId = s"sub-${id}-sub"
+    val subscriptionId = s"subscriber-${id}-sub"
     val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
 
     val queue = TrieMap.empty[String, (Subscribe, AckReplyConsumer)]
 
     val timer = new java.util.Timer()
-
-    def publishEvent(changed: IndexChanged): Future[Boolean] = {
-      val pr = Promise[Boolean]()
-      val pm = PubsubMessage.newBuilder().setData(ByteString.copyFrom(Any.pack(changed).toByteArray))
-        .build()
-
-      eventsPublisher.publish(pm).addListener(() => pr.success(true), ec)
-
-      pr.future
-    }
 
     class CommandTask extends TimerTask {
       override def run(): Unit = {
@@ -130,22 +114,7 @@ object SubscriptionHandler {
               queue.remove(s.id).get._2.ack()
             }
 
-            if(!roots.isEmpty){
-              val evt = IndexChanged(UUID.randomUUID.toString, distinct.map{case (topic, _) =>
-                val topic_name = s"${topic}_subscribers"
-                val root = indexes(topic_name)._2.root
-
-                topic_name -> (if(root.isDefined) root.get else null)
-              })
-
-              publishEvent(evt).onComplete {
-                case Success(ok) => timer.schedule(new CommandTask(), 10L)
-                case Failure(ex) => logger.error(ex.getMessage)
-              }
-
-            } else {
-              timer.schedule(new CommandTask(), 10L)
-            }
+            timer.schedule(new CommandTask(), 10L)
 
           case Failure(ex) => logger.error(ex.getMessage)
         }
@@ -202,7 +171,6 @@ object SubscriptionHandler {
 
         ec.execute(() => {
           timer.cancel()
-          eventsPublisher.shutdown()
           subscriber.stopAsync().awaitTerminated()
           pr.success(true)
         })

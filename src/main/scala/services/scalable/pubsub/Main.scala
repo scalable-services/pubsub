@@ -67,10 +67,14 @@ object Main {
       val broker = new Broker(i.toString, "192.168.1.66", basePort + i)
     }
 
+    /*PubSubHelper.createTopics(Config.topics)
+    PubSubHelper.createSubscriptions(Config.subscriptions)*/
+
     ports.foreach(startup)
   }
 
   def startup(port: Int): Unit = {
+
     // Override the configuration of the port
     val config = ConfigFactory.parseString(s"""
       akka.remote.artery.canonical.port=$port
