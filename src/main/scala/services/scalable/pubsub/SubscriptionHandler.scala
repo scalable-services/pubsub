@@ -82,7 +82,7 @@ object SubscriptionHandler {
         val commands = queue.map(_._2._1).toSeq
 
         if(commands.isEmpty){
-          timer.schedule(new CommandTask(), 10L)
+          timer.schedule(new CommandTask(), Config.SUBSCRIBER_BATCH_INTERVAL)
           return
         }
 
@@ -114,14 +114,14 @@ object SubscriptionHandler {
               queue.remove(s.id).get._2.ack()
             }
 
-            timer.schedule(new CommandTask(), 10L)
+            timer.schedule(new CommandTask(), Config.SUBSCRIBER_BATCH_INTERVAL)
 
           case Failure(ex) => logger.error(ex.getMessage)
         }
       }
     }
 
-    timer.schedule(new CommandTask(), 10L)
+    timer.schedule(new CommandTask(), Config.SUBSCRIBER_BATCH_INTERVAL)
 
     val receiver = new MessageReceiver {
       override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {

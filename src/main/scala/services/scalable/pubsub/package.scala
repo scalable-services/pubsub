@@ -81,6 +81,10 @@ package object pubsub {
     val KAFKA_HOST = "localhost:9092"
     val ZOOKEEPER_HOST = "localhost:2181"
 
+    //in ms
+    val SUBSCRIBER_BATCH_INTERVAL = 10L
+    val WORKER_BATCH_INTERVAL = 10L
+
     // All topics...
     var topics = Map(
       "tasks" -> TopicName.of(projectId, "tasks"),

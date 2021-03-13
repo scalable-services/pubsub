@@ -168,7 +168,7 @@ object Worker {
         val tasks = queue.map(_._2._1).toSeq
 
         if (tasks.isEmpty) {
-          timer.schedule(new PublishTask(), 10L)
+          timer.schedule(new PublishTask(), Config.WORKER_BATCH_INTERVAL)
           return
         }
 
@@ -198,14 +198,14 @@ object Worker {
               queue.remove(t.id).get._2.ack()
             }
 
-            timer.schedule(new PublishTask(), 10L)
+            timer.schedule(new PublishTask(), Config.WORKER_BATCH_INTERVAL)
 
           case Failure(ex) => ex.printStackTrace()
         }
       }
     }
 
-    timer.schedule(new PublishTask(), 10L)
+    timer.schedule(new PublishTask(), Config.WORKER_BATCH_INTERVAL)
 
     val tasksReceiver = new MessageReceiver {
       override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
