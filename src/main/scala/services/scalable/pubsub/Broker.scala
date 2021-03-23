@@ -32,11 +32,11 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
   val brokerId = s"broker-$id"
 
-  val session = CqlSession
+  /*val session = CqlSession
     .builder()
     .withConfigLoader(loader)
     .withKeyspace(Config.KEYSPACE)
-    .build()
+    .build()*/
 
   val subscriptionId = s"broker-$id-sub"
   val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
@@ -86,7 +86,7 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
             }
           }
 
-          posts.foreach{case (p, _) => deleteFromStorage(p.id)}
+         // posts.foreach{case (p, _) => deleteFromStorage(p.id)}
 
         case Failure(ex) => logger.info(ex.getMessage())
       }
