@@ -35,7 +35,7 @@ object BrokerClient {
 
       //val external_ip = "191.220.109.193"
 
-      client.connectFuture(port, "192.168.1.66").onComplete {
+      client.connectFuture(port, "localhost").onComplete {
         case Success(ok) =>
 
           client.publishHandler((s: MqttPublishMessage) => {

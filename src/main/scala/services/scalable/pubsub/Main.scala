@@ -64,7 +64,7 @@ object Main {
     val basePort = 3000
 
     for(i<-0 until Broker.Config.NUM_BROKERS){
-      val broker = new Broker(i.toString, "192.168.1.66", basePort + i)
+      val broker = new Broker(i.toString, "localhost", basePort + i)
     }
 
     /*PubSubHelper.createTopics(Config.topics)
