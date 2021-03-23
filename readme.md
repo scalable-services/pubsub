@@ -4,6 +4,10 @@
 - Docker
 - JDK 1.8 or superior (ideally JDK 15)
 - SBT build tool (1.4.5) (Scala)
+- Download and publish to local repository the project index: https://github.com/scalable-services/index
+    * cd into index
+    * run $ sbt publishLocal
+
 - Google Cloud account with billing enabled 
 - Google APIS activated 
 - Google Cloud Pub/Sub 
@@ -16,7 +20,7 @@
     $ sbt "testOnly services.scalable.pubsub.PubSubSpec"
         
 3.  Open two separate command prompts: 
-
+    
     First (server): $ sbt "runMain services.scalable.pubsub.Main"
     Second (client): $ sbt "runMain services.scalable.pubsub.BrokerClient"
     
