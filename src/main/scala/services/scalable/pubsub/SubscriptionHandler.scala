@@ -184,6 +184,8 @@ object SubscriptionHandler {
           case (context, PreRestart) =>
 
             Behaviors.same
+
+          case _ => Behaviors.same
         }
       }
 
