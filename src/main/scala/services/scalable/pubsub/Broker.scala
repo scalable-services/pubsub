@@ -1,22 +1,24 @@
 package services.scalable.pubsub
 
 import com.datastax.oss.driver.api.core.CqlSession
-import com.google.api.gax.core.FixedCredentialsProvider
-import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher, Subscriber}
-import com.google.cloud.storage.{BlobId, BlobInfo, StorageOptions}
+import com.google.cloud.pubsub.v1.Subscriber
+import com.google.cloud.storage.{BlobId, BlobInfo}
 import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
-import com.google.pubsub.v1.{ProjectSubscriptionName, PubsubMessage, TopicName}
+import com.google.pubsub.v1.PubsubMessage
 import io.netty.handler.codec.mqtt.MqttQoS
 import io.vertx.scala.core.Vertx
-import io.vertx.scala.kafka.client.consumer.KafkaConsumerRecords
-import io.vertx.scala.kafka.client.producer.KafkaProducerRecord
+import io.vertx.scala.kafka.client.consumer.{KafkaConsumer, KafkaConsumerRecords}
+import io.vertx.scala.kafka.client.producer.{KafkaProducer, KafkaProducerRecord}
 import io.vertx.scala.mqtt.messages.MqttUnsubscribeMessage
 import io.vertx.scala.mqtt.{MqttEndpoint, MqttServer, MqttServerOptions, MqttTopicSubscription}
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.clients.producer.ProducerConfig
 import org.slf4j.LoggerFactory
 import services.scalable.index._
 import services.scalable.pubsub.grpc._
 
+import java.nio.ByteBuffer
 import java.nio.charset.Charset
 import java.util.UUID
 import java.util.concurrent.Executor
@@ -32,97 +34,78 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
 
   val brokerId = s"broker-$id"
 
-  /*val session = CqlSession
+  val session = CqlSession
     .builder()
     .withConfigLoader(loader)
     .withKeyspace(Config.KEYSPACE)
-    .build()*/
-
-  val subscriptionId = s"broker-$id-sub"
-  val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
-
-  val taskPublisher = Publisher
-    .newBuilder(TopicName.of(Config.projectId, s"tasks"))
-    .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-    .setBatchingSettings(psettings)
     .build()
 
-  val subPublishers = TrieMap.empty[String, Publisher]
+  val INSERT_MSG = session.prepare(s"insert into messages(id, data) values(?, ?);")
+  val GET_MSG = session.prepare(s"select * from messages where id=?");
 
-  for(i<-0 until Config.NUM_SUBSCRIBERS){
-    val publisher = Publisher
-      .newBuilder(TopicName.of(Config.projectId, s"subscriber-$i"))
-      .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-      .setBatchingSettings(psettings)
-      .build()
-
-    subPublishers += i.toString -> publisher
+  def insertMsg(m: Message): Future[Boolean] = {
+    session.executeAsync(INSERT_MSG
+      .bind()
+      .setString(0, m.id)
+      .setByteBuffer(1, ByteBuffer.wrap(Any.pack(m).toByteArray))
+    ).map(_.wasApplied())
   }
 
-  val gcs = StorageOptions.newBuilder().setProjectId(Config.projectId)
-    .setCredentials(GOOGLE_CREDENTIALS).build().getService()
-
-  val receiver = new MessageReceiver {
-    override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
-
-      logger.info(s"${Console.GREEN_B}broker-$id received message: ${message}${Console.RESET}")
-
-      val batch = Any.parseFrom(message.getData.toByteArray).unpack(PostBatch)
-
-      Future.sequence(batch.posts.map{p => readFromStorage(p.id).map(p -> _)}).onComplete {
-        case Success(posts) =>
-
-          posts.foreach { case (post, data) =>
-            post.subscribers.foreach { s =>
-
-              endpoints.get(s) match {
-                case Some(e) =>
-
-                  e.publish(post.topic, io.vertx.core.buffer.Buffer.buffer(data), MqttQoS.valueOf(post.qos),
-                    false, false)
-
-                case None =>
-              }
-            }
-          }
-
-         // posts.foreach{case (p, _) => deleteFromStorage(p.id)}
-
-        case Failure(ex) => logger.info(ex.getMessage())
-      }
-
-      consumer.ack()
+  def getMsg(mid: String): Future[Option[Message]] = {
+    session.executeAsync(GET_MSG
+      .bind()
+      .setString(0, mid)
+    ).map { rs =>
+      val one = rs.one()
+      if(one == null) None else Some(Any.parseFrom(one.getByteBuffer("data").array()).unpack(Message))
     }
   }
 
-  val subscriber = Subscriber.newBuilder(subscriptionName, receiver)
-    .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-    .setFlowControlSettings(flowControlSettings)
-    .build()
+  val vertx = Vertx.vertx(voptions)
 
-  subscriber.startAsync.awaitRunning()
+  val cconfig = scala.collection.mutable.Map[String, String]()
+
+  cconfig += (ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG -> Config.KAFKA_HOST)
+  cconfig += (ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.StringDeserializer")
+  cconfig += (ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.ByteArrayDeserializer")
+
+  cconfig += (ConsumerConfig.GROUP_ID_CONFIG -> s"broker-$id")
+
+  cconfig += (ConsumerConfig.AUTO_OFFSET_RESET_CONFIG -> "latest")
+  cconfig += (ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG -> "false")
+  cconfig += (ConsumerConfig.MAX_POLL_RECORDS_CONFIG -> "1000")
+  cconfig += (ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG -> "100")
+  cconfig += (ConsumerConfig.FETCH_MIN_BYTES_CONFIG -> (1 * 1024 * 1024).toString)
+
+  val consumer = KafkaConsumer.create[String, Array[Byte]](vertx, cconfig)
+
+  val pconfig = scala.collection.mutable.Map[String, String]()
+  pconfig += (ProducerConfig.BOOTSTRAP_SERVERS_CONFIG -> Config.KAFKA_HOST)
+  pconfig += (ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.StringSerializer")
+  pconfig += (ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.ByteArraySerializer")
+  pconfig += (ProducerConfig.ACKS_CONFIG -> "all")
+  pconfig += (ProducerConfig.BATCH_SIZE_CONFIG -> (64 * 1024).toString)
+
+  // use producer for interacting with Apache Kafka
+  val producer = KafkaProducer.create[String, Array[Byte]](vertx, pconfig)
 
   def publishSubscription(topics: Seq[String], client: String): Future[Boolean] = {
     if(topics.isEmpty) return Future.successful(true)
 
-    Future.sequence(topics.map{t => t -> computeSubscriptionTopic(t)}.groupBy(_._2).map { case (pid, topics) =>
+    val pr = Promise[Boolean]()
 
-      val cmd = Subscribe(UUID.randomUUID.toString, topics.map(_._1), brokerId, client)
-      val data = ByteString.copyFrom(Any.pack(cmd).toByteArray)
+    topics.foreach { t =>
+      val sub = Subscribe(UUID.randomUUID.toString, topics, brokerId, client)
+      val buf = Any.pack(sub).toByteArray
+      val record = KafkaProducerRecord.create[String, Array[Byte]](s"sub-${computeSubscriptionTopic(t)}", sub.id, buf)
 
-      val pm = PubsubMessage.newBuilder().setData(data).build()
-      val pr = Promise[Boolean]()
+      producer.write(record)
+    }
 
-      logger.info(s"\n${Console.YELLOW_B}topic: ${topics.map(_._1)} pid: ${pid}${Console.RESET}\n")
-      val publisher = subPublishers(pid.toString)
+    producer.flush(_ => pr.success(true)).exceptionHandler(ex => pr.failure(ex))
 
-      publisher.publish(pm).addListener(() => pr.success(true), ec.asInstanceOf[Executor])
-
-      pr.future
-    }).map(!_.exists(_ == false))
+    pr.future
   }
-
-  val vertx = Vertx.vertx()
 
   val options = MqttServerOptions()
   options.setHost(host).setPort(port)
@@ -131,44 +114,14 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
   val subscriptions = TrieMap.empty[String, TrieMap[MqttEndpoint, MqttTopicSubscription]]
 
   def publishTask(task: Task): Future[Boolean] = {
-    val data = ByteString.copyFrom(Any.pack(task).toByteArray)
+    val buf = Any.pack(task).toByteArray
+    val record = KafkaProducerRecord.create[String, Array[Byte]](Topics.TASKS, task.id, buf)
 
-    val pm = PubsubMessage.newBuilder().setData(data).build()
-    val pr = Promise[Boolean]()
-
-    taskPublisher.publish(pm).addListener(() => pr.success(true), ec.asInstanceOf[Executor])
-
-    pr.future
+    producer.sendFuture(record).map(_ => true)
   }
 
   def getRoot(topic: String): Future[Option[String]] = {
     storage.load(s"${topic}_subscribers").map(_.root).recover{case _ => None}
-  }
-
-  def writeToStorage(id: String, value: Array[Byte]): Future[Boolean] = {
-    vertx.executeBlocking { () =>
-      val blobId = BlobId.of(Config.bucketId, id)
-      val blobInfo = BlobInfo.newBuilder(blobId).build()
-
-      val info = gcs.create(blobInfo, value)
-      logger.info(s"created bucket ${info}")
-    }.map(_ => true).recover{case _ => false}
-  }
-
-  def readFromStorage(id: String): Future[Array[Byte]] = {
-
-    logger.info(s"\ntrying to read ${id}...\n")
-
-    vertx.executeBlocking { () =>
-      val blobId = BlobId.of(Config.bucketId, id)
-      gcs.get(blobId).getContent()
-    }
-  }
-
-  def deleteFromStorage(id: String): Future[Boolean] = {
-    vertx.executeBlocking { () =>
-      gcs.delete(BlobId.of(Config.bucketId, id))
-    }
   }
 
   def endpointHandler(endpoint: MqttEndpoint): Unit = {
@@ -240,7 +193,9 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
       val mid = UUID.randomUUID.toString
       val data = message.payload().getBytes()
 
-      writeToStorage(mid, data).flatMap{ ok => getRoot(message.topicName())}.flatMap {
+      val m = Message(mid, message.topicName(), ByteString.copyFrom(data), message.qosLevel().value())
+
+      getRoot(m.topic).flatMap(r => insertMsg(m).map(_ => r)).flatMap {
         case None => Future.successful(true)
         case Some(root) => publishTask(Task(mid, message.topicName(), message.qosLevel().value(),
           root))
@@ -277,21 +232,74 @@ class Broker(val id: String, val host: String, val port: Int)(implicit val ec: E
     })
   }
 
+  def commitAndResume(): Unit = {
+    consumer.commitFuture().onComplete {
+      case Success(value) => consumer.resume()
+      case Failure(ex) => throw ex
+    }
+  }
+
+  def handler(recs: KafkaConsumerRecords[String, Array[Byte]]): Unit = {
+    consumer.pause()
+
+    val posts = (0 until recs.size()).map { i =>
+      val rec = recs.recordAt(i)
+      Any.parseFrom(rec.value()).unpack(Post)
+    }
+
+    Future.sequence(posts.map{p => getMsg(p.id).map(p -> _)}).onComplete {
+      case Success(posts) =>
+
+        posts.filter(_._2.isDefined).foreach { case (post, opt) =>
+
+          val m = opt.get
+
+          logger.info(s"${Console.MAGENTA_B}$brokerId processing m ${m.id} => ${post.subscribers}${Console.RESET}\n")
+
+          post.subscribers.foreach { s =>
+
+            endpoints.get(s) match {
+              case Some(e) =>
+
+                e.publish(m.topic, io.vertx.core.buffer.Buffer.buffer(m.data.toByteArray), MqttQoS.valueOf(post.qos),
+                  false, false)
+
+              case None =>
+            }
+          }
+        }
+
+        commitAndResume()
+
+      case Failure(ex) => logger.info(ex.getMessage())
+    }
+  }
+
   server.endpointHandler(endpointHandler).listenFuture().onComplete {
     case Success(result) => {
       logger.info(s"${Console.GREEN_B}MQTT server is listening on port ${result.actualPort()}${Console.RESET}")
+
+      consumer.subscribeFuture(s"broker-$id").onComplete {
+        case Success(ok) =>
+
+          consumer.handler(_ => {})
+          consumer.batchHandler(handler)
+
+        case Failure(ex) => throw ex
+      }
+
     }
     case Failure(cause) => {
       logger.info(s"${Console.RED_B}$cause${Console.RESET}")
     }
   }
 
-  def close() = server.closeFuture()
+  def close() = {
+    producer.close()
+    consumer.close()
 
-}
-
-object Broker {
-  object Config {
-    val NUM_BROKERS = 3
+    vertx.close()
+    server.closeFuture()
   }
+
 }

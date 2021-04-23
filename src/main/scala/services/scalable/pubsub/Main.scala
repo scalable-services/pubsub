@@ -6,6 +6,7 @@ import akka.actor.typed.{ActorSystem, Behavior}
 import akka.cluster.sharding.typed.ShardedDaemonProcessSettings
 import akka.cluster.sharding.typed.scaladsl.{ClusterSharding, Entity, EntityTypeKey, ShardedDaemonProcess}
 import akka.util.Timeout
+import com.datastax.oss.driver.api.core.CqlSession
 import com.google.auth.oauth2.GoogleCredentials
 import com.google.common.collect.Lists
 import com.typesafe.config.ConfigFactory
@@ -55,6 +56,14 @@ object Main {
 
   def main(args: Array[String]): Unit = {
 
+    val session = CqlSession
+      .builder()
+      .withConfigLoader(loader)
+      .withKeyspace(Config.KEYSPACE)
+      .build()
+
+    session.execute(s"TRUNCATE TABLE messages;")
+
     val ports =
       if (args.isEmpty)
         Seq(2551, 2552, 2553)
@@ -63,7 +72,7 @@ object Main {
 
     val basePort = 3000
 
-    for(i<-0 until Broker.Config.NUM_BROKERS){
+    for(i<-0 until Config.NUM_SUBSCRIBERS){
       val broker = new Broker(i.toString, "localhost", basePort + i)
     }
 

@@ -25,7 +25,7 @@ object BrokerClient {
     for(i<-0 until 20){
 
       val cid = s"c${i}"
-      val group = rand.nextInt(0, Broker.Config.NUM_BROKERS)
+      val group = rand.nextInt(0,  Config.NUM_SUBSCRIBERS)
       val port = 3000 + group
 
       println(s"${Console.GREEN_B}client-$cid group: ${group}${Console.RESET}\n")
@@ -56,13 +56,13 @@ object BrokerClient {
             }
           })
 
-          client.subscribe("demo", MqttQoS.AT_LEAST_ONCE.value(), (event: AsyncResult[Int]) => {
+          /*client.subscribe("demo", MqttQoS.AT_LEAST_ONCE.value(), (event: AsyncResult[Int]) => {
             if(event.succeeded()){
               println(s"successfully subed to topic demo...")
             } else {
               event.cause().printStackTrace()
             }
-          })
+          })*/
 
         case Failure(ex) => ex.printStackTrace()
       }

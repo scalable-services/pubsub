@@ -10,6 +10,11 @@ import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher,
 import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
 import com.google.pubsub.v1.{ProjectSubscriptionName, PubsubMessage, TopicName}
+import io.vertx.scala.core.Vertx
+import io.vertx.scala.kafka.client.consumer.{KafkaConsumer, KafkaConsumerRecords}
+import io.vertx.scala.kafka.client.producer.{KafkaProducer, KafkaProducerRecord}
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.clients.producer.ProducerConfig
 import services.scalable.index._
 import services.scalable.index.impl.DefaultContext
 import services.scalable.pubsub.grpc._
@@ -40,14 +45,29 @@ object Worker {
 
         val mediator = DistributedPubSub(ctx.system).mediator
         // subscribe to the topic named "content"
-        mediator ! DistributedPubSubMediator.Subscribe(Topics.EVENTS, ctx.self.toClassic)
+        //mediator ! DistributedPubSubMediator.Subscribe(Topics.EVENTS, ctx.self.toClassic)
 
         ctx.log.info(s"${Console.YELLOW_B}Starting worker ${name}${Console.RESET}\n")
         ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)
 
-        val tasksSubscriptionName = ProjectSubscriptionName.of(Config.projectId, s"tasks-sub")
+        val vertx = Vertx.vertx(voptions)
 
-        val brokerPublishers = TrieMap.empty[String, Publisher]
+        val cconfig = scala.collection.mutable.Map[String, String]()
+
+        cconfig += (ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG -> Config.KAFKA_HOST)
+        cconfig += (ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.StringDeserializer")
+        cconfig += (ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.ByteArrayDeserializer")
+
+        cconfig += (ConsumerConfig.GROUP_ID_CONFIG -> "pubsub.workers")
+
+        cconfig += (ConsumerConfig.AUTO_OFFSET_RESET_CONFIG -> "latest")
+        cconfig += (ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG -> "false")
+        cconfig += (ConsumerConfig.MAX_POLL_RECORDS_CONFIG -> "1000")
+        cconfig += (ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG -> "100")
+        cconfig += (ConsumerConfig.FETCH_MIN_BYTES_CONFIG -> (1 * 1024 * 1024).toString)
+
+        val consumer = KafkaConsumer.create[String, Array[Byte]](vertx, cconfig)
+
         val indexes = TrieMap.empty[String, Index[String, Bytes, Bytes]]
 
         /*for(i<-0 until Broker.Config.NUM_BROKERS){
@@ -60,44 +80,29 @@ object Worker {
           brokerPublishers += i.toString -> publisher
         }*/
 
-        val taskPublisher = Publisher
-          .newBuilder(TopicName.of(Config.projectId, s"tasks"))
-          .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-          .setBatchingSettings(psettings)
-          .build()
+        val pconfig = scala.collection.mutable.Map[String, String]()
+        pconfig += (ProducerConfig.BOOTSTRAP_SERVERS_CONFIG -> Config.KAFKA_HOST)
+        pconfig += (ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.StringSerializer")
+        pconfig += (ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.ByteArraySerializer")
+        pconfig += (ProducerConfig.ACKS_CONFIG -> "all")
+        pconfig += (ProducerConfig.BATCH_SIZE_CONFIG -> (64 * 1024).toString)
+
+        // use producer for interacting with Apache Kafka
+        val producer = KafkaProducer.create[String, Array[Byte]](vertx, pconfig)
 
         def publishTasks(tasks: Seq[Task]): Future[Boolean] = {
-          if(tasks.isEmpty) return Future.successful(true)
+          val pr = Promise[Boolean]()
 
-          Future.sequence(tasks.map { t =>
-
+          tasks.map { t =>
             val buf = Any.pack(t).toByteArray
-            val pr = Promise[Boolean]()
 
-            taskPublisher.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build()).addListener(() => {
-              pr.success(true)
-            }, ec)
-
-            pr.future
-          }).map(_ => true)
-        }
-
-        def createOrGetPublisher(topic: String): Publisher = {
-          brokerPublishers.get(topic) match {
-            case None =>
-
-              val publisher = Publisher
-                .newBuilder(TopicName.of(Config.projectId, topic))
-                .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-                .setBatchingSettings(psettings)
-                .build()
-
-              brokerPublishers += topic -> publisher
-
-              publisher
-
-            case Some(p) => p
+            val record = KafkaProducerRecord.create[String, Array[Byte]](Topics.TASKS, t.id, buf)
+            producer.write(record)
           }
+
+          producer.flush(_ => pr.success(true)).exceptionHandler(ex => pr.failure(ex))
+
+          pr.future
         }
 
         def getSubscriptions(topic: String, root: String, last: String = ""): Future[(Seq[(String, String)], Option[String])] = {
@@ -126,135 +131,106 @@ object Worker {
           getSubscriptions(indexes(root))
         }
 
-        val queue = TrieMap.empty[String, (Task, AckReplyConsumer)]
-        val timer = new java.util.Timer()
+        def post(posts: Seq[Post]): Future[Boolean] = {
+          val pr = Promise[Boolean]()
 
-        def post(msgs: Seq[(Task, Seq[(String, String)])]): Future[Boolean] = {
-          if(msgs.isEmpty) return Future.successful(true)
+          posts.map { p =>
+            val buf = Any.pack(p).toByteArray
 
-          val delivery = TrieMap.empty[String, Seq[(Task, Seq[String])]]
-
-          msgs.foreach { case (t, subscribers) =>
-            subscribers.groupBy(_._2).foreach { case (broker, clients_topics) =>
-              delivery.get(broker) match {
-                case None =>
-
-                  delivery.put(broker, Seq(t -> clients_topics.map(_._1)))
-
-                case Some(list) => delivery.put(broker, list :+ (t -> clients_topics.map(_._1)))
-              }
-            }
+            val record = KafkaProducerRecord.create[String, Array[Byte]](p.kafkaTopic, p.id, buf)
+            producer.write(record)
           }
 
-          Future.sequence(delivery.map { case (broker, list) =>
-            PostBatch(UUID.randomUUID.toString, broker, list.map{ case (t, clients) =>
-              logger.info(s"\n\n${Console.BLUE_B}subscribers: ${clients}\n\n${Console.RESET}")
+          producer.flush(_ => pr.success(true)).exceptionHandler(ex => pr.failure(ex))
 
-              Post(t.id, t.topic, t.qos, clients)
-            })
-          }.map { batch =>
-
-            val buf = Any.pack(batch).toByteArray
-
-            val pr = Promise[Boolean]()
-            val broker = createOrGetPublisher(batch.externalTopic)
-
-            broker.publish(PubsubMessage.newBuilder().setData(ByteString.copyFrom(buf)).build())
-              .addListener(() => pr.success(true), ec)
-
-            pr.future
-          }).map(_ => true)
+          pr.future
         }
 
-        class PublishTask extends TimerTask {
-          override def run(): Unit = {
+        def commitAndResume(): Unit = {
+          consumer.commitFuture().onComplete {
+            case Success(ok) => consumer.resume()
+            case Failure(ex) => throw ex
+          }
+        }
 
-            val tasks = queue.map(_._2._1).toSeq
+        def handler(recs: KafkaConsumerRecords[String, Array[Byte]]): Unit = {
+          consumer.pause()
 
-            if (tasks.isEmpty) {
-              timer.schedule(new PublishTask(), Config.WORKER_BATCH_INTERVAL)
-              return
-            }
+          val tasks = (0 until recs.size()).map { i =>
+            val rec = recs.recordAt(i)
+            Any.parseFrom(rec.value()).unpack(Task)
+          }
 
-            Future.sequence(tasks.map { t => getSubscriptions(t.topic, t.root, t.lastBlock).map {t -> _}
-            }).flatMap { subs =>
+          Future.sequence(tasks.map { t => getSubscriptions(t.topic, t.root, t.lastBlock).map {t -> _}}).flatMap { subs =>
 
-              val list = subs.filterNot(_._2._1.isEmpty)
+            val list = subs.filterNot(_._2._1.isEmpty)
 
-              var lasts = Seq.empty[(Task, String)]
+            var delivery = Seq.empty[Post]
+            var nexts = Seq.empty[Task]
 
-              val brokers = list.map { case (m, (subs, last)) =>
-                if (last.isDefined) {
-                  lasts = lasts :+ (m -> last.get)
-                }
+            list.foreach { case (m, (subs, last)) =>
 
-                m -> subs
+              subs.groupBy(_._2).foreach { case (kafka_topic, subscribers) =>
+                delivery = delivery :+ Post(m.id, kafka_topic, m.qos, subscribers.map(_._1))
               }
 
-              Future.sequence(Seq(post(brokers), publishTasks(lasts.map { case (t, last) =>
-                Task(t.id, t.topic, t.qos, t.root, last)
-              })))
-
-            }.onComplete {
-              case Success(ok) =>
-
-                tasks.foreach { t =>
-                  queue.remove(t.id).get._2.ack()
-                }
-
-                timer.schedule(new PublishTask(), Config.WORKER_BATCH_INTERVAL)
-
-              case Failure(ex) => ex.printStackTrace()
+              if(last.isDefined){
+                nexts = nexts :+ Task(m.id, m.topic, m.qos, m.root, last.get)
+              }
             }
+
+            /*var lasts = Seq.empty[(Task, String)]
+
+            val brokers = list.map { case (m, (subs, last)) =>
+              if (last.isDefined) {
+                lasts = lasts :+ (m -> last.get)
+              }
+
+              m -> subs
+            }
+
+            Future.sequence(Seq(post(brokers), publishTasks(lasts.map { case (t, last) => Task(t.id, t.topic, t.qos, t.root, last)})))*/
+
+            logger.info(s"${Console.BLUE_B}$name delivery => ${delivery} nexts ${nexts}${Console.RESET}\n")
+
+            Future.sequence(Seq(
+              post(delivery),
+              publishTasks(nexts)
+            ))
+          }.onComplete {
+            case Success(ok) => commitAndResume()
+            case Failure(ex) => throw ex
           }
         }
 
-        timer.schedule(new PublishTask(), Config.WORKER_BATCH_INTERVAL)
+        consumer.subscribeFuture(Topics.TASKS).onComplete {
+          case Success(ok) =>
 
-        val tasksReceiver = new MessageReceiver {
-          override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
+            consumer.handler(_ => {})
+            consumer.batchHandler(handler)
 
-            val t = Any.parseFrom(message.getData.toByteArray).unpack(Task)
-
-            println(s"${Console.GREEN_B}worker $name received task ${t}${Console.RESET}\n")
-
-            queue.put(t.id, t -> consumer)
-          }
+          case Failure(ex) => throw ex
         }
 
-        val tasksSubscriber = Subscriber
-          .newBuilder(tasksSubscriptionName, tasksReceiver)
-          .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-          .setFlowControlSettings(flowControlSettings)
-          .build()
+        def closeAll[T](): Behavior[T] = {
+          logger.info(s"${Console.RED_B}$name stopping at ${ctx.system.address}...${Console.RESET}")
 
-        tasksSubscriber.startAsync()//.awaitRunning()
+          producer.close()
+          consumer.close()
+          vertx.close()
+
+          Behaviors.same
+        }
 
         Behaviors.receiveMessage[Worker.WorkerMessage] {
           case Stop =>
-
-            /*ctx.log.info(s"${Console.RED_B}WORKER IS STOPPING: ${name}${Console.RESET}\n")
-
-            ec.execute(() => {
-              timer.cancel()
-              taskPublisher.shutdown()
-              brokerPublishers.foreach(_._2.shutdown())
-              tasksSubscriber.stopAsync().awaitTerminated()
-            })*/
 
             Behaviors.stopped
           //case _ => Behaviors.empty
         }.receiveSignal {
           case (context, PostStop) =>
 
-            ctx.log.info(s"${Console.RED_B}WORKER IS STOPPING: ${name}${Console.RESET}\n")
-
-            ec.execute(() => {
-              timer.cancel()
-              taskPublisher.shutdown()
-              brokerPublishers.foreach(_._2.shutdown())
-              tasksSubscriber.stopAsync().awaitTerminated()
-            })
+            closeAll()
 
             Behaviors.same
 

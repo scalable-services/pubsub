@@ -25,14 +25,14 @@ message Subscribe {
 message Message {
   string id = 1;
   string topic = 2;
-  //bytes data = 3;
+  bytes data = 3;
 
-  int32 qos = 3;
+  int32 qos = 4;
 }
 
 message Post {
   string id = 1;
-  string topic = 2;
+  string kafka_topic = 2;
   int32 qos = 3;
   repeated string subscribers = 4;
 }
