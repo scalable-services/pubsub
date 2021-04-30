@@ -37,7 +37,7 @@ libraryDependencies ++= Seq(
   "com.typesafe.akka" %% "akka-pki" % akkaVersion,
   "com.typesafe.akka" %% "akka-cluster-tools" % AkkaVersion,
 
-  "services.scalable" %% "index" % "0.9",
+  "services.scalable" %% "index" % "0.2",
 
   "io.vertx" %% "vertx-kafka-client-scala" % VertxVersion,
   "io.vertx" %% "vertx-mqtt-scala" % VertxVersion,
