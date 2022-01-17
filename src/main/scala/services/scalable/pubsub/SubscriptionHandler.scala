@@ -9,6 +9,10 @@ import com.google.cloud.pubsub.v1.{AckReplyConsumer, MessageReceiver, Publisher,
 import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
 import com.google.pubsub.v1.{ProjectSubscriptionName, PubsubMessage, TopicName}
+import io.vertx.scala.core.Vertx
+import io.vertx.scala.kafka.client.consumer.{KafkaConsumer, KafkaConsumerRecords}
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.clients.producer.ProducerConfig
 import services.scalable.index._
 import services.scalable.pubsub.grpc._
 
@@ -34,8 +38,26 @@ object SubscriptionHandler {
         ctx.log.info(s"${Console.YELLOW_B}Starting  ${name}${Console.RESET}\n")
         ctx.system.receptionist ! Receptionist.Register(ServiceKey[Command](name), ctx.self)
 
+        val vertx = Vertx.vertx(voptions)
+
         // activate the extension
         val mediator = DistributedPubSub(ctx.system).mediator
+
+        val cconfig = scala.collection.mutable.Map[String, String]()
+
+        cconfig += (ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG -> Config.KAFKA_HOST)
+        cconfig += (ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.StringDeserializer")
+        cconfig += (ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG -> "org.apache.kafka.common.serialization.ByteArrayDeserializer")
+
+        cconfig += (ConsumerConfig.GROUP_ID_CONFIG -> s"pubsub.sub-${id}")
+
+        cconfig += (ConsumerConfig.AUTO_OFFSET_RESET_CONFIG -> "latest")
+        cconfig += (ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG -> "false")
+        cconfig += (ConsumerConfig.MAX_POLL_RECORDS_CONFIG -> "1000")
+        cconfig += (ConsumerConfig.FETCH_MAX_WAIT_MS_CONFIG -> "100")
+        cconfig += (ConsumerConfig.FETCH_MIN_BYTES_CONFIG -> (1 * 1024 * 1024).toString)
+
+        val consumer = KafkaConsumer.create[String, Array[Byte]](vertx, cconfig)
 
         val indexes = TrieMap.empty[String, (Index[String, Bytes, Bytes], Context[String, Bytes, Bytes])]
 
@@ -73,111 +95,73 @@ object SubscriptionHandler {
           addSubscribers(index, ctx)
         }
 
-        val subscriptionId = s"subscriber-${id}-sub"
-        val subscriptionName = ProjectSubscriptionName.of(Config.projectId, subscriptionId)
+        def commitAndResume(): Unit = {
+          consumer.commitFuture().onComplete {
+            case Success(ok) => consumer.resume()
+            case Failure(ex) => throw ex
+          }
+        }
 
-        val queue = TrieMap.empty[String, (Subscribe, AckReplyConsumer)]
+        def handler(recs: KafkaConsumerRecords[String, Array[Byte]]): Unit = {
+          consumer.pause()
 
-        val timer = new java.util.Timer()
+          val commands = (0 until recs.size()).map { i =>
+            val rec = recs.recordAt(i)
+            Any.parseFrom(rec.value()).unpack(Subscribe)
+          }
 
-        class CommandTask extends TimerTask {
-          override def run(): Unit = {
+          var distinct = Map.empty[String, Map[String, Subscribe]]
 
-            val commands = queue.map(_._2._1).toSeq
+          commands.foreach { s =>
+            s.topics.foreach { t =>
 
-            if(commands.isEmpty){
-              timer.schedule(new CommandTask(), Config.SUBSCRIBER_BATCH_INTERVAL)
-              return
-            }
+              val opt = distinct.get(t)
 
-            var distinct = Map.empty[String, Map[String, Subscribe]]
+              if(opt.isDefined){
+                val subs = opt.get
 
-            commands.foreach { s =>
-              s.topics.foreach { t =>
-
-                val opt = distinct.get(t)
-
-                if(opt.isDefined){
-                  val subs = opt.get
-
-                  if(!subs.isDefinedAt(s.subscriber)){
-                    distinct = distinct + (t -> (subs + (s.subscriber -> s)))
-                  }
-                } else {
-                  distinct = distinct + (t -> Map(s.subscriber -> s))
+                if(!subs.isDefinedAt(s.subscriber)){
+                  distinct = distinct + (t -> (subs + (s.subscriber -> s)))
                 }
+              } else {
+                distinct = distinct + (t -> Map(s.subscriber -> s))
               }
             }
+          }
 
-            println(s"\n${Console.MAGENTA_B}$name received subscriptions ${commands.map(_.subscriber)}${Console.RESET}\n")
+          println(s"\n${Console.MAGENTA_B}$name received subscriptions ${distinct}${Console.RESET}\n")
 
-            Future.sequence(distinct.map{case (topic, list) => addSubscribers(topic, list.map(_._2).toSeq)}).onComplete {
-              case Success(roots) =>
-
-                commands.foreach { s =>
-                  queue.remove(s.id).get._2.ack()
-                }
-
-                timer.schedule(new CommandTask(), Config.SUBSCRIBER_BATCH_INTERVAL)
-
-              case Failure(ex) => logger.error(ex.getMessage)
-            }
+          Future.sequence(distinct.map{case (topic, list) => addSubscribers(topic, list.map(_._2).toSeq)}).onComplete {
+            case Success(roots) => commitAndResume()
+            case Failure(ex) => logger.error(ex.getMessage)
           }
         }
 
-        timer.schedule(new CommandTask(), Config.SUBSCRIBER_BATCH_INTERVAL)
+        consumer.subscribeFuture(s"sub-${id}").onComplete {
+          case Success(ok) =>
 
-        val receiver = new MessageReceiver {
-          override def receiveMessage(message: PubsubMessage, consumer: AckReplyConsumer): Unit = {
+            consumer.handler(_ => {})
+            consumer.batchHandler(handler)
 
-            val s = Any.parseFrom(message.getData.toByteArray).unpack(Subscribe)
-
-            println(s"\n${Console.MAGENTA_B}$name received message ${s.subscriber}${Console.RESET}\n")
-
-            queue.put(s.id, s -> consumer)
-          }
+          case Failure(ex) => throw ex
         }
 
-        val subscriber = Subscriber
-          .newBuilder(subscriptionName, receiver)
-          .setCredentialsProvider(GOOGLE_CREDENTIALS_PROVIDER)
-          .setFlowControlSettings(flowControlSettings)
-          .build()
+        def closeAll[T](): Behavior[T] = {
+          logger.info(s"${Console.RED_B}$name stopping at ${ctx.system.address}...${Console.RESET}")
 
-        /*if(subscriber.isRunning){
-          subscriber.stopAsync().awaitTerminated()
-        }*/
+          consumer.close()
+          vertx.close()
 
-        subscriber.startAsync()//.awaitRunning()
+          Behaviors.same
+        }
 
         Behaviors.receiveMessage[Command] {
-          case Stop =>
-
-            /*ctx.log.info(s"${Console.RED_B}subscription handler $name is stopping${Console.RESET}\n")
-
-            val pr = Promise[Boolean]()
-
-            ec.execute(() => {
-              timer.cancel()
-              subscriber.stopAsync().awaitTerminated()
-              pr.success(true)
-            })*/
-
-            Behaviors.stopped
-
+          case Stop => Behaviors.stopped
           case _ => Behaviors.empty
         }.receiveSignal {
           case (context, PostStop) =>
 
-            ctx.log.info(s"${Console.RED_B}subscription handler $name is stopping${Console.RESET}\n")
-
-            val pr = Promise[Boolean]()
-
-            ec.execute(() => {
-              timer.cancel()
-              subscriber.stopAsync().awaitTerminated()
-              pr.success(true)
-            })
+            closeAll()
 
             Behaviors.same
 
